@@ -39,6 +39,10 @@ Say what you decided ("we choose PostgreSQL 16 for the database because …") or
 
 Full reference: [skills/decisions/decisions.md](skills/decisions/decisions.md). To avoid permission prompts on a trusted machine, allow `Skill(runiacorp-plugin:decisions)` and `Bash(python3 */skills/decisions/scripts/dec.py *)` in your Claude Code permissions.
 
+## License
+
+Apache-2.0, see [LICENSE](LICENSE).
+
 ## Repository layout
 
 ```
