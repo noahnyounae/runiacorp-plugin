@@ -311,6 +311,79 @@ class Rename(Base):
         self.assertIn("P1.title", out)
 
 
+class Obsolete(Base):
+    FULL = ["--chosen", "PostgreSQL 16 on RDS", "--reason", "ACID and native JSON", "--alternatives", "none"]
+
+    def setUp(self):
+        super().setUp()
+        self.start(packs=2)
+        self.add("Database engine", question=Q)
+        self.add("Managed database", pack="1.2", question="Which managed database service do we adopt?")
+        self.ok("set", "1.1.1", "validated", *self.FULL, "--why", "ok")
+
+    def test_supersede_recalculates_states_and_marks_document(self):
+        self.ok("set", "1.2.1", "doing", "--why", "started")
+        out = self.ok("obsolete", "1.1.1", "1.2.1", "--why", "the managed service replaces the self-hosted choice")
+        self.assertIn("Validated -> Obsolete", out)
+        self.assertIn("superseded by 1.2.1", out)
+        self.assertIn("**Superseded by**: 1.2.1", (self.d / "docs/decisions/database-engine.md").read_text())
+        status = self.ok("status", "--all")
+        self.assertIn("[Obsolete] Database engine", status)
+        self.assertIn("⇒ 1.2.1", status)
+        self.assertNotIn("Database engine", self.ok("status"))
+        self.assertIn("OK", self.ok("verify"))
+        self.assertIn("Superseded by 1.2.1", self.ok("next", "--all"))
+        hidden = self.ok("next")
+        self.assertNotIn("Database engine", hidden)
+        self.assertIn("Managed database", hidden)
+        self.assertIn('"by": "C2"', self.ok("show", "1.1.1"))
+
+    def test_obsolete_leaves_pack_state_limit_and_open_questions(self):
+        self.add("Backup policy", question="Which backup policy protects the database?")  # 1.1.2, todo
+        self.ok("config", "max_pack", "2", "--why", "tight")
+        self.assertIn("overflow pack created", self.add("Third in pack", question="What does the third one settle exactly?"))
+        self.ok("obsolete", "1.1.2", "1.2.1", "--why", "replaced by the managed service")
+        self.assertNotIn("1.1.2", self.ok("questions"), "an obsolete decision is not an open question")
+        self.assertNotIn("overflow", self.add("Fourth in pack", pack="1.1", question="What does the fourth one settle exactly?"),
+                         "an obsolete decision does not count toward the pack limit")
+        self.ok("obsolete", "1.1.1", "1.2.1", "--why", "replaced as well")
+        self.assertIn("OK", self.ok("verify"))
+        # a pack whose decisions are all obsolete has nothing left to do
+        self.ok("pack-new", "Legacy")
+        self.add("Legacy thing", pack="1.4", question="What does the legacy thing settle exactly?")
+        self.ok("obsolete", "1.4.1", "1.2.1", "--why", "retired")
+        self.assertIn("[Validated] Legacy", self.ok("status", "--all"))
+
+    def test_guards_restore_and_tamper(self):
+        self.assertIn("another decision replaces", self.fail("set", "1.1.1", "obsolete", "--why", "x"))
+        self.assertIn("must exist", self.fail("obsolete", "1.1.1", "1.1.1", "--why", "x"))
+        self.ok("obsolete", "1.1.1", "1.2.1", "--why", "replaced")
+        self.assertIn("must exist", self.fail("obsolete", "1.2.1", "1.1.1", "--why", "an obsolete decision cannot replace"))
+        self.assertIn("Obsolete", self.fail("detail", "1.1.1", "--reason", "another good enough reason", "--why", "x"))
+        self.add("Another database", question="Which database do we keep for reporting?")
+        self.assertIn("Obsolete", self.fail("merge", "1.1.1", "1.1.2", "--why", "x"))
+        plan = self.d / "plan.json"
+        plan.write_text(json.dumps({"iterations": [{"title": "I", "packs": [{"title": "P", "choices": [{"title": "Some decision", "question": "What does this settle exactly?", "state": "obsolete"}]}]}]}))
+        self.assertIn("cannot be imported", self.fail("import", str(plan), "--append"))
+        self.assertIn("Obsolete -> Doing", self.ok("set", "1.1.1", "doing", "--why", "the replacement was cancelled"))
+        self.assertNotIn('"by"', self.ok("show", "1.1.1").splitlines()[0])
+        self.assertNotIn("Superseded", (self.d / "docs/decisions/database-engine.md").read_text())
+        self.ok("obsolete", "1.1.1", "1.2.1", "--why", "replaced again")
+        p = self.d / ".decisions" / "index.json"
+        p.write_text(p.read_text().replace('"by": "C2"', '"by": "C3"'))
+        rc, out, _ = self.dec("verify")
+        self.assertEqual(rc, 2)
+        self.assertIn("C1.by", out)
+
+    def test_conflicts_ignore_obsolete(self):
+        self.add("Analytics store", pack="1.2", question="Which store holds the analytics events?", chosen="MongoDB 7 cluster", reason="flexible schema")
+        self.ok("set", "1.1.1", "doing", "--why", "reopen", "--force")
+        self.ok("set", "1.1.1", "validated", "--chosen", "PostgreSQL 16 on RDS", "--reason", "ACID and native JSON", "--alternatives", "MongoDB (no joins)", "--why", "re-approved")
+        self.assertIn("Rejected vs chosen", self.ok("conflicts"))
+        self.ok("obsolete", "1.1.1", "1.2.2", "--why", "the analytics store replaces it")
+        self.assertIn("No conflict", self.ok("conflicts"))
+
+
 class Integrity(Base):
     def setUp(self):
         super().setUp()

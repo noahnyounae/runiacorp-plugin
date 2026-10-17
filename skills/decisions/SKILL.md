@@ -15,7 +15,7 @@ CLI: `python3 ${CLAUDE_SKILL_DIR}/scripts/dec.py <cmd>` (below: `D <cmd>`). `D -
 - If the user's language differs from the project's, ask once whether to switch (`D config lang <code>`).
 
 ## Model
-- **Decision** (Cn): settles ONE question; linked to a document (created or appended automatically); states `todo < doing < done < validated`.
+- **Decision** (Cn): settles ONE question; linked to a document (created or appended automatically); states `todo < doing < done < validated`. A decision a newer one overrides becomes `obsolete` (always names its replacement; out of the ordering, out of pack/iteration states and counts; reversible with a reason). Make one obsolete only when the user says so.
 - **Pack**: group of related decisions, at most `max_pack` (default 6). When full, new decisions go automatically to an overflow pack "Title (2)". State = lowest of its decisions (computed).
 - **Iteration**: cycle of packs; state = lowest of its packs. A new one opens only when the previous is Validated.
 - Index `iteration.pack.decision` (e.g. `1.2.3`) is accepted everywhere instead of ids.
@@ -26,7 +26,7 @@ CLI: `python3 ${CLAUDE_SKILL_DIR}/scripts/dec.py <cmd>` (below: `D <cmd>`). `D -
 init --lang xx | config [key value] | iter-new T | pack-new T [--iter I] | pack-rm P --why W
 add T --pack P --question Q [--doc f] [--chosen X --alternatives X --reason X] --why W
 detail ID [--question|--chosen|--alternatives|--reason X] --why W | set ID todo|doing|done|validated --why W [fields]
-rename ID T --why W | move ID P --why W | merge KEEP ABSORB --why W [--title T] | review [P]
+obsolete OLD NEW --why W | rename ID T --why W | move ID P --why W | merge KEEP ABSORB --why W [--title T] | review [P]
 next [--all] | status | show ID | log -n N | verify | seal --why W [--rebase] | export | scan | import PLAN [--dry-run]
 questions [--all] | answers [--dry-run] | conflicts [--digest|--create|--pack|--dismiss A B --why W]
 ```

@@ -10,11 +10,11 @@ import argparse, fcntl, hashlib, json, os, re, subprocess, sys, unicodedata
 from datetime import datetime
 from pathlib import Path
 
-VERSION = "1.2.0"
+VERSION = "1.3.0"
 FORMAT = 3
 DIR = ".decisions"
 GENESIS = "0" * 64
-SK = ("todo", "doing", "done", "validated")  # canonical state keys (stored in the journal)
+SK = ("todo", "doing", "done", "validated", "obsolete")  # canonical state keys (stored in the journal); obsolete is outside the ordering
 FIELDS = ("question", "chosen", "alternatives", "reason")
 REQ_AT = {2: ("chosen", "reason"), 3: ("chosen", "reason", "alternatives")}  # target state -> required fields
 DEFAULTS = {"lang": "en", "max_pack": 6, "min_field": 10, "doc_dir": "docs/decisions"}
@@ -104,7 +104,7 @@ def state_names():
         files += list((_ctx["root"] / DIR / "i18n").glob("*.json"))
     for f in files:
         cat = _read_json(f)
-        for i in range(4):
+        for i in range(5):
             if cat.get(f"state.{i}"):
                 m[norm(cat[f"state.{i}"])] = i
     return m
@@ -162,18 +162,19 @@ def missing(c, target):
     return (["question"] if not c.get("question") else []) + [f for f in REQ_AT.get(target, ()) if not c.get(f)]
 
 
-def block(cid, c):
+def block(cid, c, db=None):
     v = lambda f: c.get(f) or T("doc.todo")
-    return "\n".join([f"<!-- decisions:{cid} -->", f"## {c['title']}"] + [f"**{T('field.' + f)}**: {v(f)}" for f in FIELDS] + [f"<!-- /decisions:{cid} -->"])
+    by = [T("doc.superseded", ix=idx(db, c["by"]), title=db["choices"][c["by"]]["title"])] if db is not None and c.get("by") in db["choices"] else []
+    return "\n".join([f"<!-- decisions:{cid} -->", f"## {c['title']}"] + [f"**{T('field.' + f)}**: {v(f)}" for f in FIELDS] + by + [f"<!-- /decisions:{cid} -->"])
 
 
-def sync_doc(r, cid, c):
+def sync_doc(r, cid, c, db=None):
     """Write/refresh the decision's structured block in its document (between markers; other text untouched)."""
     p = r / c["doc"]
     p.parent.mkdir(parents=True, exist_ok=True)
     txt = p.read_text(encoding="utf-8") if p.exists() else f"# {c['title']}\n"
     pat = re.compile(rf"<!-- decisions:{cid} -->.*?<!-- /decisions:{cid} -->", re.S)
-    b = block(cid, c)
+    b = block(cid, c, db)
     txt = pat.sub(lambda m: b, txt, count=1) if pat.search(txt) else txt.rstrip("\n") + "\n\n" + b + "\n"
     p.write_text(txt, encoding="utf-8")
 
@@ -263,7 +264,7 @@ def replay(entries):
         t, i = e.get("type"), str(e.get("id", ""))
         if t == "create":
             if i.startswith("C"):
-                C[i] = {"title": e.get("title"), "pack": e.get("pack"), "doc": e.get("doc"), "state": 0, "dh": None, "refs": e.get("refs") or [], **{f: e.get(f, "") for f in FIELDS}}
+                C[i] = {"title": e.get("title"), "pack": e.get("pack"), "doc": e.get("doc"), "state": 0, "dh": None, "by": "", "refs": e.get("refs") or [], **{f: e.get(f, "") for f in FIELDS}}
             elif i.startswith("P"):
                 P[i] = {"iter": e.get("iter"), "title": e.get("title")}
             elif i.startswith("I"):
@@ -276,6 +277,7 @@ def replay(entries):
                 issues.append(T("p.badstate", n=no, id=i))
                 continue
             C[i]["state"] = to
+            C[i]["by"] = e.get("by", "") if to == 4 else ""
             C[i]["dh"] = e.get("dochash") if to == 3 else None
         elif t == "rename":
             if i in C:
@@ -309,6 +311,11 @@ def replay(entries):
 
 
 def pack_count(db, pid):
+    """Active decisions of a pack (Obsolete ones do not count toward the limit)."""
+    return sum(1 for c in db["choices"].values() if c["pack"] == pid and c["state"] != 4)
+
+
+def pack_total(db, pid):
     return sum(1 for c in db["choices"].values() if c["pack"] == pid)
 
 
@@ -348,7 +355,7 @@ def check(r, with_replay=True):
         for p in db.get("packs", {}):
             if pack_count(db, p) > maxp():
                 warns.append(T("w.pack_over", pack=idx(db, p), n=pack_count(db, p), max=maxp()))
-        inc = [idx(db, k) for k, c in db["choices"].items() if c["state"] >= 2 and missing(c, c["state"])]
+        inc = [idx(db, k) for k, c in db["choices"].items() if c["state"] in (2, 3) and missing(c, c["state"])]
         if inc:
             warns.append(T("w.incomplete", n=len(inc), list=", ".join(inc[:8]) + ("…" if len(inc) > 8 else "")))
     synced = None
@@ -369,8 +376,8 @@ def check(r, with_replay=True):
                     probs.append(T("p.field", id=k, f="title", a=src[k].get("title"), b=want))
         for k in set(db["choices"]) & set(C):
             c, j = db["choices"][k], C[k]
-            for f in ("title", "pack", "doc", "state", "refs") + FIELDS:
-                if c.get(f, [] if f == "refs" else ("" if f in FIELDS else None)) != j[f]:
+            for f in ("title", "pack", "doc", "state", "refs", "by") + FIELDS:
+                if c.get(f, [] if f == "refs" else ("" if f in FIELDS + ("by",) else None)) != j[f]:
                     a, b = (SN(c[f]), SN(j[f])) if f == "state" else (c.get(f), j[f])
                     probs.append(T("p.field", id=k, f=f, a=a, b=b))
             if c.get("state") == 3:
@@ -436,8 +443,10 @@ def nid(db, kind, prefix):
 
 
 def pack_state(db, pid):
+    """Lowest state of its active decisions; a pack whose decisions are all Obsolete has nothing left to do (3)."""
     st = [c["state"] for c in db["choices"].values() if c["pack"] == pid]
-    return min(st) if st else 0
+    live = [x for x in st if x != 4]
+    return min(live) if live else (3 if st else 0)
 
 
 def iter_state(db, iid):
@@ -473,7 +482,7 @@ def toks(s):
 
 
 def candidates(db, pid, min_score=0.34):
-    cs = sorted([(k, c) for k, c in db["choices"].items() if c["pack"] == pid], key=lambda x: x[1]["n"])
+    cs = sorted([(k, c) for k, c in db["choices"].items() if c["pack"] == pid and c["state"] != 4], key=lambda x: x[1]["n"])
     out = []
     for i in range(len(cs)):
         for j in range(i + 1, len(cs)):
@@ -608,7 +617,7 @@ def cmd_pack_rm(a):
     p = resolve(db, a.pack)
     if p not in db["packs"]:
         die("not_pack", id=p)
-    if pack_count(db, p):
+    if pack_total(db, p):
         die("pack_not_empty")
     before, ix = derived(db), idx(db, p)
     del db["packs"][p]
@@ -641,7 +650,7 @@ def new_decision(r, db, title, pack, fields, doc=None, why=None, refs=None, no_o
     entry = {"title": title, "pack": target, "doc": rel, "state": 0, "n": bump(db["packs"][target]), "refs": refs or [], **{f: fields.get(f, "") for f in FIELDS}}
     created = not docp.exists()
     db["choices"][c] = entry
-    sync_doc(r, c, entry)
+    sync_doc(r, c, entry, db)
     log(r, type="create", id=c, title=title, pack=target, doc=rel, doc_created=created, refs=refs or None, **fields, why=why or T("why.create"))
     commit(r, db, before, why or T("why.create"), T("cause.add", id=c))
     return c, target, note, created, rel
@@ -673,6 +682,8 @@ def cmd_detail(a):
     c = db["choices"][k]
     if c["state"] == 3:
         die("detail_validated")
+    if c["state"] == 4:
+        die("detail_obsolete")
     need(a.why, "why")
     upd = {f: clean_field(f, getattr(a, f)) for f in FIELDS if getattr(a, f)}
     upd = {f: v for f, v in upd.items() if c.get(f) != v}
@@ -680,19 +691,25 @@ def cmd_detail(a):
         die("detail_nothing")
     log(r, type="detail", id=k, fields=upd, why=a.why)
     c.update(upd)
-    sync_doc(r, k, c)
+    sync_doc(r, k, c, db)
     save(r, db)
     print(T("detail_updated", ix=idx(db, k), labels=", ".join(T("field." + f) for f in upd)))
 
 
-def do_set(r, db, cid, new, upd, why, force=False, dry=False):
-    """Change a decision's state (with optional field updates). Raises Die on any refusal. Returns output lines."""
+def do_set(r, db, cid, new, upd, why, force=False, dry=False, by=None):
+    """Change a decision's state (with optional field updates). Raises Die on any refusal. Returns output lines.
+    new == 4 (Obsolete) needs `by`, the decision that replaces it; leaving Obsolete clears that link."""
     c = db["choices"][cid]
     old = c["state"]
     if new == old:
         die("already_state", id=cid, state=SN(old))
     upd = {f: v for f, v in upd.items() if c.get(f) != v}
-    if new > old:
+    if new == 4:
+        if not by:
+            die("obsolete_by_required")
+        if by not in db["choices"] or by == cid or db["choices"][by]["state"] == 4:
+            die("obsolete_bad_by")
+    elif new > old or old == 4:
         miss = missing({**c, **upd}, new) if new >= 2 else ([] if c.get("question") or "question" in upd else ["question"])
         if miss:
             die("precision_missing", state=SN(new), labels=", ".join(T("field." + f) for f in miss), flags=" ".join(f'--{f} "…"' for f in miss))
@@ -709,12 +726,18 @@ def do_set(r, db, cid, new, upd, why, force=False, dry=False):
     if upd:
         log(r, type="detail", id=cid, fields=upd, why=why)
         c.update(upd)
-    sync_doc(r, cid, c)
-    dh = fhash(r / c["doc"]) if new == 3 else None
     c["state"] = new
-    log(r, type="regress" if new < old else "state", id=cid, **{"from": SK[old], "to": SK[new]}, why=why, dochash=dh)
+    if new == 4:
+        c["by"] = by
+    else:
+        c.pop("by", None)
+    sync_doc(r, cid, c, db)
+    dh = fhash(r / c["doc"]) if new == 3 else None
+    log(r, type="regress" if new < old else "state", id=cid, **{"from": SK[old], "to": SK[new]}, why=why, dochash=dh, by=by if new == 4 else None)
     commit(r, db, before, why, T("cause.set", id=cid, state=SK[new]))
     out = [T("set_done", ix=idx(db, cid), a=SN(old), b=SN(new)) + (T("regress_mark") if new < old else "")]
+    if new == 4:
+        out.append(T("obsolete.line", by=idx(db, by)))
     for k, v in derived(db).items():
         if before.get(k) != v:
             kind, ident = k.split(":")
@@ -729,7 +752,17 @@ def cmd_set(a):
         die("not_choice", id=cid)
     need(a.why, "why")
     upd = {f: clean_field(f, getattr(a, f)) for f in FIELDS if getattr(a, f)}
-    print("\n".join(do_set(r, db, cid, parse_state(a.state), upd, a.why, a.force)))
+    by = resolve(db, a.by) if a.by else None
+    print("\n".join(do_set(r, db, cid, parse_state(a.state), upd, a.why, a.force, by=by)))
+
+
+def cmd_obsolete(a):
+    r = root(); lock(r); guard(r); db = load(r)
+    old, new = resolve(db, a.old), resolve(db, a.new)
+    if old not in db["choices"] or new not in db["choices"]:
+        die("not_choice", id=old if old not in db["choices"] else new)
+    need(a.why, "why")
+    print("\n".join(do_set(r, db, old, 4, {}, a.why, by=new)))
 
 
 def cmd_rename(a):
@@ -744,7 +777,7 @@ def cmd_rename(a):
     need(a.why, "why")
     old, ent["title"], dh = ent["title"], title, None
     if k in db["choices"]:  # the document block carries the title; a Validated decision gets its new document hash recorded
-        sync_doc(r, k, ent)
+        sync_doc(r, k, ent, db)
         dh = fhash(r / ent["doc"]) if ent["state"] == 3 else None
     log(r, type="rename", id=k, **{"from": old, "to": title}, why=a.why, dochash=dh)
     save(r, db)
@@ -783,6 +816,8 @@ def cmd_merge(a):
         die("merge.same")
     need(a.why, "why")
     A, B = db["choices"][ka], db["choices"][kb]
+    if 4 in (A["state"], B["state"]):
+        die("merge.obsolete")
     if A["pack"] != B["pack"]:
         die("merge.diffpack")
     ia, ib = idx(db, ka), idx(db, kb)
@@ -798,7 +833,7 @@ def cmd_merge(a):
     A.update(copied)
     A["state"] = new
     if copied or a.title:
-        sync_doc(r, ka, A)
+        sync_doc(r, ka, A, db)
     dh = fhash(r / A["doc"]) if new == 3 else None
     del db["choices"][kb]
     for o in db["choices"].values():
@@ -854,12 +889,12 @@ def cmd_status(a):
         for p, pk in db["packs"].items():
             if pk["iter"] != i:
                 continue
-            cs = {k: c for k, c in db["choices"].items() if c["pack"] == p}
-            nv = sum(1 for c in cs.values() if c["state"] == 3)
-            print(f"  {idx(db, p)} [{SN(pack_state(db, p))}] {pk['title']}  " + T("validated_count", v=nv, n=len(cs)))
-            for k, c in cs.items():
+            allc = {k: c for k, c in db["choices"].items() if c["pack"] == p}
+            nv = sum(1 for c in allc.values() if c["state"] == 3)
+            print(f"  {idx(db, p)} [{SN(pack_state(db, p))}] {pk['title']}  " + T("validated_count", v=nv, n=pack_count(db, p)))
+            for k, c in allc.items():
                 if a.all or c["state"] < 3:
-                    print(f"    {idx(db, k)} [{SN(c['state'])}] {c['title']} -> {c['doc']}")
+                    print(f"    {idx(db, k)} [{SN(c['state'])}] {c['title']} -> {c['doc']}" + (f" ⇒ {idx(db, c['by'])}" if c["state"] == 4 and c.get("by") in db["choices"] else ""))
     if act is None:
         print(T("all_validated"))
 
@@ -867,13 +902,15 @@ def cmd_status(a):
 def cell(c, f, w):
     v = c.get(f) or ""
     if not v:
-        return T("next.missing") if c["state"] >= {"question": 0, "chosen": 2, "reason": 2, "alternatives": 3}[f] else "—"
+        return T("next.missing") if c["state"] in (0, 1, 2, 3) and c["state"] >= {"question": 0, "chosen": 2, "reason": 2, "alternatives": 3}[f] else "—"
     v = v.replace("|", "\\|")
     return v if not w or len(v) <= w else v[: w - 1].rstrip() + "…"
 
 
-def step(c):
+def step(db, c):
     s = c["state"]
+    if s == 4:
+        return T("step.obsolete", by=idx(db, c["by"]) if c.get("by") in db["choices"] else "?")
     if s == 3:
         return "—"
     miss = missing(c, s + 1) if s + 1 >= 2 else ([] if c.get("question") else ["question"])
@@ -889,8 +926,9 @@ def render_next(db, a, w, res):
     act = active_iter(db)
     esc = lambda x: str(x).replace("|", "\\|")
     for i in (list(db["iterations"]) if a.all else [act or list(db["iterations"])[-1]]):
-        cs = [c for c in db["choices"].values() if db["packs"][c["pack"]]["iter"] == i]
+        cs = [c for c in db["choices"].values() if db["packs"][c["pack"]]["iter"] == i and c["state"] != 4]
         nv = sum(1 for c in cs if c["state"] == 3)
+        obs = 0
         out += [T("next.iter", ix=idx(db, i), title=db["iterations"][i]["title"], state=SN(iter_state(db, i)), v=nv, n=len(cs)), ""]
         hidden = 0
         for p, pk in db["packs"].items():
@@ -899,27 +937,30 @@ def render_next(db, a, w, res):
             if pack_state(db, p) == 3 and not a.all:  # validated packs need no attention
                 hidden += 1
                 continue
-            pcs = sorted([(k, c) for k, c in db["choices"].items() if c["pack"] == p], key=lambda x: x[1]["n"])
-            out += [T("next.pack", ix=idx(db, p), title=esc(pk["title"]), n=len(pcs), max=maxp(), state=SN(pack_state(db, p))), ""]
+            pcs = sorted([(k, c) for k, c in db["choices"].items() if c["pack"] == p and (a.all or c["state"] != 4)], key=lambda x: x[1]["n"])
+            obs += sum(1 for c in db["choices"].values() if c["pack"] == p and c["state"] == 4) if not a.all else 0
+            out += [T("next.pack", ix=idx(db, p), title=esc(pk["title"]), n=pack_count(db, p), max=maxp(), state=SN(pack_state(db, p))), ""]
             if not pcs:
                 out += [T("next.nodec"), ""]
                 continue
             hd = [T("h." + h) for h in ("index", "decision", "question", "chosen", "alternatives", "reason", "state", "next")]
             out += ["| " + " | ".join(hd) + " |", "|" + "---|" * len(hd)]
             for k, c in pcs:
-                out.append(f"| {idx(db, k)} | {esc(c['title'])} | {cell(c, 'question', w)} | {cell(c, 'chosen', w)} | {cell(c, 'alternatives', w)} | {cell(c, 'reason', w)} | {SN(c['state'])} | {step(c)} |")
+                out.append(f"| {idx(db, k)} | {esc(c['title'])} | {cell(c, 'question', w)} | {cell(c, 'chosen', w)} | {cell(c, 'alternatives', w)} | {cell(c, 'reason', w)} | {SN(c['state'])} | {step(db, c)} |")
             out.append("")
         if hidden:
             out += [T("next.hidden", n=hidden), ""]
+        if obs:
+            out += [T("next.obsolete", n=obs), ""]
     if act is None:
         out.append(T("next.all_done"))
     else:
         todo = [c for c in db["choices"].values() if db["packs"][c["pack"]]["iter"] == act and c["state"] < 3]
-        vides = [p for p, pk in db["packs"].items() if pk["iter"] == act and not pack_count(db, p)]
+        vides = [p for p, pk in db["packs"].items() if pk["iter"] == act and not pack_total(db, p)]
         near = [(p, pack_count(db, p)) for p, pk in db["packs"].items() if pk["iter"] == act and pack_count(db, p) >= warnp()]
         if near:
             out += [T("next.near", list=", ".join(f"{idx(db, p)} ({n}/{maxp()})" for p, n in near)), ""]
-        inc = [idx(db, k) for k, c in db["choices"].items() if db["packs"][c["pack"]]["iter"] == act and c["state"] >= 2 and missing(c, c["state"])]
+        inc = [idx(db, k) for k, c in db["choices"].items() if db["packs"][c["pack"]]["iter"] == act and c["state"] in (2, 3) and missing(c, c["state"])]
         if inc:
             out += [T("next.incomplete", list=", ".join(inc)), ""]
         out.append(T("next.remaining", n=len(todo), empty=T("next.empty_packs", n=len(vides)) if vides else "", ix=idx(db, act)))
@@ -1151,7 +1192,7 @@ def cmd_answers(a):
                 labels = ", ".join(T("field." + f) for f in upd)
                 if not a.dry_run:
                     log(r, type="detail", id=cid, fields=upd, why=why)
-                    c.update(upd); sync_doc(r, cid, c); save(r, db)
+                    c.update(upd); sync_doc(r, cid, c, db); save(r, db)
                 out.append(T("answers.would_detail" if a.dry_run else "answers.detail", ix=ix, labels=labels)); cnt["detail"] += 1
         except Die as e:
             out.append(T("answers.error", ix=ix, msg=e.plain)); cnt["errors"] += 1
@@ -1170,7 +1211,7 @@ def jac(a, b):
 def find_conflicts(db):
     """Heuristic candidates: a decision rejects what another chose; two decisions answer the same question differently."""
     dismissed = {frozenset(x) for x in db.get("dismissed", [])}
-    closed = {k: c for k, c in db["choices"].items() if c.get("chosen") and not c.get("refs")}
+    closed = {k: c for k, c in db["choices"].items() if c.get("chosen") and not c.get("refs") and c["state"] != 4}
     out, seen = [], set()
     for ka, A in closed.items():
         for it in alt_items(A.get("alternatives", "")):
@@ -1247,7 +1288,7 @@ def cmd_conflicts(a):
             st = T("conf.status.tracked", ix=idx(db, tr), state=SN(db["choices"][tr]["state"])) if tr else T("conf.status.new")
             print(f"| {kind} | {side(ka)} | {side(kb)} | {why} | {st} |")
     if a.digest:
-        rows = sorted([(k, c) for k, c in db["choices"].items() if c.get("chosen")], key=lambda x: ikey(db, x[0]))
+        rows = sorted([(k, c) for k, c in db["choices"].items() if c.get("chosen") and c["state"] != 4], key=lambda x: ikey(db, x[0]))
         print("\n" + T("conf.digest"))
         for k, c in rows[: a.max]:
             print(f"{idx(db, k)} | {c['question']} | {c['chosen']} | {c.get('alternatives') or '—'}")
@@ -1462,6 +1503,8 @@ def cmd_import(a):
                 hist = ch.get("history") or [{"state": ch.get("state", "todo"), "date": ch.get("date"), "why": ch.get("why", dwhy)}]
                 for h in hist:
                     new = parse_state(h["state"])
+                    if new == 4:
+                        die("import.no_obsolete")
                     if new != cur:
                         if new > cur and new >= 2 and missing(db["choices"][c], new):
                             die("import.state_missing", title=ttl, state=SN(new), labels=", ".join(T("field." + f) for f in missing(db["choices"][c], new)))
@@ -1496,7 +1539,7 @@ def cmd_import(a):
         log(r, type="init", id="-", why=T("init.why"), config=c0)
     for k, ch in db["choices"].items():
         if k not in old_ids:
-            sync_doc(r, k, ch)
+            sync_doc(r, k, ch, db)
     for t, e in events:
         if e.get("dochash") == "PENDING":
             e["dochash"] = fhash(r / db["choices"][e["id"]]["doc"])
@@ -1550,7 +1593,8 @@ def main():
         ("--create", {"action": "store_true", "help": "create a resolving decision per new candidate"}), ("--pack", {"action": "store_true", "help": "print (and create if needed) the conflicts pack"}),
         ("--dismiss", {"nargs": 2, "metavar": ("A", "B"), "help": "mark a pair as a false positive (needs --why)"}), ("--undismiss", {"nargs": 2, "metavar": ("A", "B"), "help": "flag a dismissed pair again (needs --why)"}), ("--max", {"type": int, "default": 60}), why=True)
     add("detail", cmd_detail, "set/correct the 4 fields of a decision", ("id", {}), ("--question", {}), ("--chosen", {}), ("--alternatives", {}), ("--reason", {}), why_required=True)
-    add("set", cmd_set, "change a decision's state (todo|doing|done|validated); Done/Validated require detail", ("id", {}), ("state", {}), ("--question", {}), ("--chosen", {}), ("--alternatives", {}), ("--reason", {}), why_required=True, force=True)
+    add("set", cmd_set, "change a decision's state (todo|doing|done|validated|obsolete); Done/Validated require detail, obsolete requires --by", ("id", {}), ("state", {}), ("--by", {"help": "for state obsolete: the decision that replaces it"}), ("--question", {}), ("--chosen", {}), ("--alternatives", {}), ("--reason", {}), why_required=True, force=True)
+    add("obsolete", cmd_obsolete, "make a decision obsolete: it is replaced by another decision (restore with set <old> doing)", ("old", {}), ("new", {"help": "the decision that replaces it"}), why_required=True)
     add("rename", cmd_rename, "rename a decision, pack or iteration (the id/index never changes)", ("id", {}), ("title", {}), why_required=True)
     add("move", cmd_move, "move a decision to another pack", ("id", {}), ("pack", {}), why_required=True, force=True)
     add("merge", cmd_merge, "merge two decisions of one pack (first kept, second absorbed)", ("keep", {}), ("absorbed", {}), ("--title", F("new title for the kept decision")), why_required=True)

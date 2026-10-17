@@ -235,5 +235,15 @@
  "conf.undismissed": "{a} / {b} will be flagged again",
  "conf.dismissed_list": "Dismissed pairs (not flagged): {list}. Restore one with `conflicts --undismiss A B --why …`.",
  "rename.same": "The new title is the same as the current one",
- "rename.done": "{ix}: «{a}» renamed to «{b}»"
+ "rename.done": "{ix}: «{a}» renamed to «{b}»",
+ "state.4": "Obsolete",
+ "doc.superseded": "**Superseded by**: {ix} «{title}»",
+ "obsolete_by_required": "A decision becomes Obsolete only when another decision replaces it: give it with --by (or use the obsolete command).",
+ "obsolete_bad_by": "The replacing decision must exist, differ from this one and not be Obsolete itself.",
+ "detail_obsolete": "Decision Obsolete: restore it first (set ... doing --why ...) before editing its detail.",
+ "merge.obsolete": "An Obsolete decision cannot be merged: restore it first.",
+ "obsolete.line": "  superseded by {by}",
+ "step.obsolete": "Superseded by {by}",
+ "next.obsolete": "{n} obsolete decision(s) hidden (--all to show)",
+ "import.no_obsolete": "The state obsolete cannot be imported: import first, then run obsolete."
 }

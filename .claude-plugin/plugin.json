@@ -1,6 +1,6 @@
 {
   "name": "runiacorp-plugin",
-  "version": "1.2.0",
+  "version": "1.3.0",
   "description": "Runiacorp skills for Claude Code. Included: decisions (decision registry with hash-chained journal).",
   "author": {
     "name": "Runiacorp"

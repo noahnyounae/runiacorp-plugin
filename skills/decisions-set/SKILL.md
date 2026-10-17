@@ -1,6 +1,6 @@
 ---
 description: "Change a decision's state (todo|doing|done|validated), with a reason"
-argument-hint: "<index> <state> --why \"…\" [--chosen …] [--reason …] [--alternatives …]"
+argument-hint: "<index> <state> --why \"…\" [--chosen …] [--reason …] [--alternatives …] [--by <new>]"
 disable-model-invocation: true
 allowed-tools: Bash(python3 ${CLAUDE_PLUGIN_ROOT}/skills/decisions/scripts/dec.py *)
 ---

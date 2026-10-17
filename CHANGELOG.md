@@ -2,6 +2,11 @@
 
 Format: [Keep a Changelog](https://keepachangelog.com/). Versioning: the `version` in `.claude-plugin/plugin.json` is the update signal for installed copies; bump it on every release.
 
+## [1.3.0] - 2026-10-18
+
+### Added
+- **Obsolete** state: a decision superseded by another (`obsolete OLD NEW --why …`, or `set OLD obsolete --by NEW`). The replacing decision is mandatory; the old one keeps its history and document (marked "Superseded by …"). Obsolete decisions leave pack/iteration state computation, the per-pack limit, `next` (shown with `--all`), merge candidates, conflict detection and open questions. Reversible with a reason (`set OLD doing --why …`). Slash command `decisions-obsolete`.
+
 ## [1.2.0] - 2026-10-18
 
 ### Added

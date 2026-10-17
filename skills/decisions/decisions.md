@@ -18,6 +18,7 @@ Claude writes everything you read (titles, questions, documents, tables) **in yo
 | **Pack** | related decisions (same subject or period); max `max_pack` (default 6) | computed = lowest of its decisions |
 | **Iteration** | a cycle of packs | computed = lowest of its packs |
 
+- **Obsolete** is a fifth state outside the ordering (see below). Obsolete decisions are ignored when computing pack/iteration states and the pack limit.
 - A new iteration opens only when the previous one is **Validated**; one active iteration at a time.
 - A full pack sends new decisions to an **overflow pack** on the same subject ("Stack (2)", "Stack (3)"…). Before that, merge candidates are shown.
 - An empty pack counts as `todo` (it blocks its iteration until filled or deleted with `pack-rm`).
@@ -52,6 +53,7 @@ Slash name = `/runiacorp-plugin:decisions-<command>`.
 | `conflicts [--digest] [--create] [--pack] [--dismiss|--undismiss A B --why …]` | contradiction/conflict check between decisions (see below) |
 | `detail ID [--question --chosen --alternatives --reason] --why …` | set/correct the 4 fields (refused on Validated) |
 | `set ID STATE --why … [fields] [--force]` | change state; done/validated require the fields (can be passed in the same call); validating records the document hash; regression allowed with a reason (`--force` if a later iteration started) |
+| `obsolete OLD NEW --why …` | make OLD obsolete, replaced by NEW (same as `set OLD obsolete --by NEW`); see "Obsolete decisions" |
 | `rename ID "new title" --why …` | rename a decision, pack or iteration; the index and id never change; a decision's document block is refreshed (file name unchanged); journaled |
 | `move ID PACK --why … [--force]` | move to another pack (refused into a full pack) |
 | `merge KEEP ABSORB --why … [--title T]` | merge two decisions of one pack: lowest state kept, missing fields inherited, absorbed document kept and referenced |
@@ -65,6 +67,15 @@ Slash name = `/runiacorp-plugin:decisions-<command>`.
 | `seal --why … [--rebase]` | chain a legacy journal / rebuild the chain after an accepted alteration |
 | `scan [--max N] [--session ID --grep re --context]` | inventory of an existing project |
 | `import PLAN [--dry-run] [--append]` | import a retroactive plan |
+
+## Obsolete decisions
+
+A newer decision can override an older one: `obsolete OLD NEW --why …`. NEW is mandatory (it must exist, differ from OLD and not be obsolete itself); OLD may be in any state, Validated included.
+
+- OLD keeps its history, fields and document; its document block gains "Superseded by NEW". It shows as `Obsolete ⇒ NEW` in `status --all` and `next --all` (hidden otherwise, with a count).
+- It no longer counts in its pack's state, the iteration's state, the `max_pack` limit, `next`, merge candidates, conflict detection or open questions. A pack whose decisions are all obsolete has nothing left to do and counts as Validated; the replacing decision lives in its own pack and must itself be completed.
+- Frozen while obsolete: `detail` and `merge` are refused. Wrong call? `set OLD doing --why …` restores it (the link is cleared, the usual precision checks apply for done/validated). Everything is journaled and replay-checked (`by` field).
+- Not importable: import first, then run `obsolete`.
 
 ## Answering open questions in a document
 

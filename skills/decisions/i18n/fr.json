@@ -235,5 +235,15 @@
  "conf.undismissed": "{a} / {b} sera de nouveau signalée",
  "conf.dismissed_list": "Paires écartées (non signalées) : {list}. En rétablir une : `conflicts --undismiss A B --why …`.",
  "rename.same": "Le nouveau titre est identique au titre actuel",
- "rename.done": "{ix} : « {a} » renommé en « {b} »"
+ "rename.done": "{ix} : « {a} » renommé en « {b} »",
+ "state.4": "Obsolète",
+ "doc.superseded": "**Remplacée par** : {ix} « {title} »",
+ "obsolete_by_required": "Une décision ne devient Obsolète que si une autre la remplace : la donner avec --by (ou utiliser la commande obsolete).",
+ "obsolete_bad_by": "La décision de remplacement doit exister, être différente de celle-ci et ne pas être elle-même Obsolète.",
+ "detail_obsolete": "Décision Obsolète : la restaurer d'abord (set ... doing --why ...) avant de modifier son détail.",
+ "merge.obsolete": "Une décision Obsolète ne peut pas être fusionnée : la restaurer d'abord.",
+ "obsolete.line": "  remplacée par {by}",
+ "step.obsolete": "Remplacée par {by}",
+ "next.obsolete": "{n} décision(s) obsolète(s) masquée(s) (--all pour les afficher)",
+ "import.no_obsolete": "L'état obsolète ne s'importe pas : importer d'abord, puis lancer obsolete."
 }

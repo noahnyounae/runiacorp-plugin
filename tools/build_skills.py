@@ -42,9 +42,12 @@ SPEC = [
      f"If the output mentions an overflow pack or merge candidates, tell the user and offer `/{PLUGIN}:decisions-review`. " + WRITE.replace("<cmd>", "add")),
     ("detail", "Set or correct the 4 fields of a decision (question, chosen, alternatives, reason)", "<index> [--question …] [--chosen …] [--reason …] [--alternatives …] --why \"…\"", "inject",
      "Refused on a Validated decision: set it back with `/" + PLUGIN + ":decisions-set` first. " + WRITE.replace("<cmd>", "detail")),
-    ("set", "Change a decision's state (todo|doing|done|validated), with a reason", "<index> <state> --why \"…\" [--chosen …] [--reason …] [--alternatives …]", "inject",
+    ("set", "Change a decision's state (todo|doing|done|validated), with a reason", "<index> <state> --why \"…\" [--chosen …] [--reason …] [--alternatives …] [--by <new>]", "inject",
      "done requires chosen + reason; validated also requires alternatives. If the script refuses for insufficient detail, supply the fields from the conversation or ask. "
      "Validate ONLY if the user explicitly asks. Also report induced pack/iteration changes. " + WRITE.replace("<cmd>", "set")),
+    ("obsolete", "Make a decision obsolete by replacing it with another decision", "<old> <new> --why \"…\"", "inject",
+     "Use it when a newer decision overrides an older one; ask which decision replaces which if unclear. The old decision keeps its history and document (marked as superseded) and stops counting in pack/iteration states and limits; "
+     "restore it with `/" + PLUGIN + ":decisions-set <old> doing --why …`. Never make a decision obsolete unless the user says so. " + WRITE.replace("<cmd>", "obsolete")),
     ("rename", "Rename a decision, pack or iteration", "<index> \"new title\" --why \"…\"", "inject",
      "Works on a decision, a pack or an iteration; the index never changes. A decision's document block is updated too. " + WRITE.replace("<cmd>", "rename")),
     ("move", "Move a decision to another pack", "<index> <pack> --why \"…\"", "inject", WRITE.replace("<cmd>", "move")),
