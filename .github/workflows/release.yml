@@ -1,0 +1,30 @@
+name: Release
+
+# Push a tag like v1.0.0 to publish a GitHub Release.
+# Users get plugin updates from the `version` in plugin.json; the release is the changelog and the audit trail.
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Tests
+        run: python -m unittest discover -s tests -v
+      - name: Tag, plugin.json, dec.py and CHANGELOG must agree
+        run: python tools/release_notes.py "$GITHUB_REF_NAME" > release-notes.md
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          flags=""
+          case "$GITHUB_REF_NAME" in *-*) flags="--prerelease" ;; esac
+          gh release create "$GITHUB_REF_NAME" --title "runiacorp-plugin $GITHUB_REF_NAME" --notes-file release-notes.md $flags

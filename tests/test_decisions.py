@@ -342,5 +342,50 @@ class Packaging(unittest.TestCase):
         self.assertLess(len((SKILL / "SKILL.md").read_text().split()), 900)
 
 
+class CiCd(unittest.TestCase):
+    def tool(self, name, *args, env=None):
+        p = subprocess.run([sys.executable, str(REPO / "tools" / name), *args], capture_output=True, text=True, env={**os.environ, **(env or {})})
+        return p.returncode, p.stdout, p.stderr
+
+    def test_release_notes_match_or_refuse(self):
+        rc, out, _ = self.tool("release_notes.py", "v1.0.0")
+        self.assertEqual(rc, 0)
+        self.assertIn("decisions", out)
+        rc, _, err = self.tool("release_notes.py", "v9.9.9")
+        self.assertEqual(rc, 1)
+        self.assertIn("CHANGELOG.md has no", err)
+
+    def test_version_bump_warning_in_a_real_git_repo(self):
+        d = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, d, True)
+        git = lambda *a: subprocess.run(["git", "-c", "user.email=t@t", "-c", "user.name=t", "-C", str(d), *a], capture_output=True, text=True, check=True)
+        (d / ".claude-plugin").mkdir()
+        (d / "skills" / "x").mkdir(parents=True)
+        pj = d / ".claude-plugin" / "plugin.json"
+        pj.write_text(json.dumps({"name": "p", "version": "1.0.0"}))
+        (d / "skills" / "x" / "SKILL.md").write_text("one")
+        git("init", "-q"); git("add", "-A"); git("commit", "-qm", "base")
+        base = git("rev-parse", "HEAD").stdout.strip()
+        (d / "skills" / "x" / "SKILL.md").write_text("two")
+        git("add", "-A"); git("commit", "-qm", "change without bump")
+        rc, out, _ = self.tool("check_version_bump.py", base, env={"REPO_ROOT": str(d)})
+        self.assertEqual(rc, 0, "never fails the build")
+        self.assertIn("::warning", out)
+        pj.write_text(json.dumps({"name": "p", "version": "1.0.1"}))
+        git("add", "-A"); git("commit", "-qm", "bump")
+        rc, out, _ = self.tool("check_version_bump.py", base, env={"REPO_ROOT": str(d)})
+        self.assertIn("version bumped to 1.0.1", out)
+        self.assertNotIn("::warning", out)
+
+    def test_workflows_are_present_and_wired(self):
+        ci = (REPO / ".github" / "workflows" / "ci.yml").read_text()
+        for needle in ("unittest discover", "build_skills.py --check", "claude plugin validate . --strict", "check_version_bump.py"):
+            self.assertIn(needle, ci)
+        rel = (REPO / ".github" / "workflows" / "release.yml").read_text()
+        self.assertIn("release_notes.py", rel)
+        self.assertIn("tags:", rel)
+        self.assertTrue((REPO / ".github" / "dependabot.yml").exists())
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -14,4 +14,4 @@ Format: [Keep a Changelog](https://keepachangelog.com/). Versioning: the `versio
 - Multilingual: skill and scripts in English; replies, documents and script messages in the user's language (`en`, `fr` catalogs; project-local catalogs for any other language).
 - Per-project `config.json` (`lang`, `max_pack`, `min_field`, `doc_dir`; document folder auto-detected).
 - 20 slash commands (`/runiacorp-plugin:decisions-<command>`), generated from one spec, hidden from the model's context.
-- Test suite and CI.
+- Test suite (Python 3.9+) and GitHub Actions CI/CD: tests on Linux/macOS × Python 3.9/3.12/3.13, strict plugin validation, version-bump reminder, tag-driven GitHub Release (checks tag/version/changelog agree), Dependabot for actions.

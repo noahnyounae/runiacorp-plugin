@@ -1,5 +1,7 @@
 # runiacorp-plugin
 
+[![CI](https://github.com/noahnyounae/runiacorp-plugin/actions/workflows/ci.yml/badge.svg)](https://github.com/noahnyounae/runiacorp-plugin/actions/workflows/ci.yml)
+
 Runiacorp skills for [Claude Code](https://code.claude.com), shipped as one plugin and one marketplace (`runiacorp`) from this repository.
 
 | Skill | What it does |
@@ -74,17 +76,29 @@ CHANGELOG.md
 
 ```
 python3 tools/build_skills.py              # regenerate slash commands after editing the spec
-python3 -m unittest discover -s tests -v   # 23 tests: lifecycle, packs, tampering, languages, import/scan, packaging
+python3 -m unittest discover -s tests -v   # lifecycle, packs, tampering, languages, import/scan, packaging, CI tools
 claude plugin validate .                   # manifests
 claude --plugin-dir .                      # try the plugin in a session without installing; /reload-plugins after edits
 ```
 
 Non-interactive (`claude -p`) runs deny the Skill tool unless pre-approved: add `--allowedTools "Skill(runiacorp-plugin:decisions)" "Bash(python3 …/dec.py *)"`.
 
+### CI/CD (GitHub Actions)
+
+| Workflow | Runs on | What it does |
+|---|---|---|
+| `ci.yml` / **tests** | push to `main`, pull requests | byte-compile, generated slash commands in sync, unit tests on Linux + macOS × Python 3.9 / 3.12 / 3.13 |
+| `ci.yml` / **validate plugin and marketplace** | same | `claude plugin validate . --strict` (offline, no credentials) |
+| `ci.yml` / **version bump reminder** | same | warns (never fails) when shipped files changed but `version` did not: installed copies only update on a version change |
+| `release.yml` | tag `v*` | re-runs the tests, checks that the tag, `plugin.json`, `dec.py` and `CHANGELOG.md` agree, then publishes a GitHub Release with the changelog section (`-` in the tag = pre-release) |
+| `dependabot.yml` | monthly | keeps the actions up to date |
+
+Minimum supported Python: 3.9 (macOS system Python). To make `tests` and `validate` mandatory before merging, enable branch protection on `main` and require those checks.
+
 ### Release checklist
 
-- [ ] tests and `claude plugin validate .` pass
-- [ ] `version` bumped in `plugin.json` and `VERSION` in `skills/decisions/scripts/dec.py` (the test checks they match the changelog)
-- [ ] `CHANGELOG.md` updated
+- [ ] tests and `claude plugin validate .` pass (CI does it too)
+- [ ] `version` bumped in `plugin.json` and `VERSION` in `skills/decisions/scripts/dec.py`
+- [ ] `CHANGELOG.md` has a `## [x.y.z]` section
 - [ ] if the registry data format changed: bump `FORMAT` in `dec.py`, document the migration
-- [ ] commit, tag `v<version>`, push
+- [ ] commit, then `git tag vX.Y.Z && git push origin main vX.Y.Z`: the Release workflow publishes it (it fails, and publishes nothing, if the versions disagree)

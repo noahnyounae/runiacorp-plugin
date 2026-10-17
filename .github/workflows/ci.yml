@@ -1,0 +1,60 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: tests (${{ matrix.os }}, python ${{ matrix.python }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        python: ["3.9", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Byte-compile everything
+        run: python -m compileall -q skills tools tests
+      - name: Generated slash commands are in sync
+        run: python tools/build_skills.py --check
+      - name: Unit tests
+        run: python -m unittest discover -s tests -v
+
+  plugin-manifest:
+    name: validate plugin and marketplace
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - name: Install Claude Code CLI (validation only, no credentials needed)
+        run: npm install -g @anthropic-ai/claude-code
+      - name: Validate manifests (warnings fail the build)
+        run: claude plugin validate . --strict
+
+  version-bump:
+    name: version bump reminder
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Warn if shipped files changed without bumping the plugin version
+        env:
+          BASE: ${{ github.event_name == 'pull_request' && format('origin/{0}', github.base_ref) || github.event.before }}
+        run: python3 tools/check_version_bump.py "$BASE"
