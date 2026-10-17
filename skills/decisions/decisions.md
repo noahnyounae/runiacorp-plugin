@@ -52,6 +52,7 @@ Slash name = `/runiacorp-plugin:decisions-<command>`.
 | `conflicts [--digest] [--create] [--pack] [--dismiss|--undismiss A B --why …]` | contradiction/conflict check between decisions (see below) |
 | `detail ID [--question --chosen --alternatives --reason] --why …` | set/correct the 4 fields (refused on Validated) |
 | `set ID STATE --why … [fields] [--force]` | change state; done/validated require the fields (can be passed in the same call); validating records the document hash; regression allowed with a reason (`--force` if a later iteration started) |
+| `rename ID "new title" --why …` | rename a decision, pack or iteration; the index and id never change; a decision's document block is refreshed (file name unchanged); journaled |
 | `move ID PACK --why … [--force]` | move to another pack (refused into a full pack) |
 | `merge KEEP ABSORB --why … [--title T]` | merge two decisions of one pack: lowest state kept, missing fields inherited, absorbed document kept and referenced |
 | `review [PACK] [--all]` | merge candidates (same document, similar titles) in full or near-full packs |

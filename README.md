@@ -44,7 +44,7 @@ If you previously copied the `decisions` skill or its `decisions-*` commands int
 
 Say what you decided ("we choose PostgreSQL 16 for the database because …") or ask "what should I do next?". Or use the slash commands, all namespaced by the plugin:
 
-`/runiacorp-plugin:decisions-next`, `-questions`, `-answers`, `-conflicts`, `-status`, `-add`, `-set`, `-detail`, `-move`, `-merge`, `-review`, `-pack-new`, `-pack-rm`, `-iter-new`, `-show`, `-log`, `-verify`, `-seal`, `-export`, `-scan`, `-import`, `-config`, `-init`.
+`/runiacorp-plugin:decisions-next`, `-questions`, `-answers`, `-conflicts`, `-status`, `-add`, `-set`, `-detail`, `-rename`, `-move`, `-merge`, `-review`, `-pack-new`, `-pack-rm`, `-iter-new`, `-show`, `-log`, `-verify`, `-seal`, `-export`, `-scan`, `-import`, `-config`, `-init`.
 
 Typical loop: `-next` (what is open) → `-questions` (a Markdown file of open questions) → answer in the file → `-answers` → `-conflicts` (contradictions become new decisions to settle).
 

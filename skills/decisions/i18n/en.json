@@ -233,5 +233,7 @@
  "conf.dismissed": "{a} / {b} dismissed (no longer flagged)",
  "conf.not_dismissed": "{a} / {b} is not dismissed",
  "conf.undismissed": "{a} / {b} will be flagged again",
- "conf.dismissed_list": "Dismissed pairs (not flagged): {list}. Restore one with `conflicts --undismiss A B --why …`."
+ "conf.dismissed_list": "Dismissed pairs (not flagged): {list}. Restore one with `conflicts --undismiss A B --why …`.",
+ "rename.same": "The new title is the same as the current one",
+ "rename.done": "{ix}: «{a}» renamed to «{b}»"
 }

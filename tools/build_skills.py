@@ -45,6 +45,8 @@ SPEC = [
     ("set", "Change a decision's state (todo|doing|done|validated), with a reason", "<index> <state> --why \"…\" [--chosen …] [--reason …] [--alternatives …]", "inject",
      "done requires chosen + reason; validated also requires alternatives. If the script refuses for insufficient detail, supply the fields from the conversation or ask. "
      "Validate ONLY if the user explicitly asks. Also report induced pack/iteration changes. " + WRITE.replace("<cmd>", "set")),
+    ("rename", "Rename a decision, pack or iteration", "<index> \"new title\" --why \"…\"", "inject",
+     "Works on a decision, a pack or an iteration; the index never changes. A decision's document block is updated too. " + WRITE.replace("<cmd>", "rename")),
     ("move", "Move a decision to another pack", "<index> <pack> --why \"…\"", "inject", WRITE.replace("<cmd>", "move")),
     ("merge", "Merge two decisions of one pack (the first is kept, the second absorbed)", "<keep> <absorb> --why \"…\" [--title \"…\"]", "inject",
      "The kept decision takes the lowest state and inherits missing fields; the absorbed document is kept and referenced. " + WRITE.replace("<cmd>", "merge")),

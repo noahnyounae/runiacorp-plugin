@@ -270,6 +270,47 @@ class Conflicts(Base):
         self.assertIn("OK", self.ok("verify"))
 
 
+class Rename(Base):
+    def test_rename_decision_pack_iteration(self):
+        self.start()
+        self.add("Database engine", question=Q)
+        doc = self.d / "docs" / "decisions" / "database-engine.md"
+        self.assertIn("renamed to", self.ok("rename", "1.1.1", "Primary database engine", "--why", "clearer name"))
+        self.assertIn("## Primary database engine", doc.read_text())
+        self.assertNotIn("## Database engine", doc.read_text())
+        self.assertTrue(doc.exists(), "file name is unchanged")
+        self.ok("rename", "1.1", "Platform stack", "--why", "broader")
+        self.ok("rename", "1", "Foundations", "--why", "better name")
+        out = self.ok("status")
+        self.assertIn("Foundations", out)
+        self.assertIn("Platform stack", out)
+        self.assertIn("Primary database engine", out)
+        self.assertIn("1.1.1", self.ok("show", "1.1.1"))
+        self.assertIn("OK", self.ok("verify"))
+
+    def test_rename_guards_and_validated_hash(self):
+        self.start()
+        self.add("Database engine", question=Q)
+        self.assertIn("same as the current", self.fail("rename", "1.1.1", "Database engine", "--why", "x"))
+        self.assertIn("too short", self.fail("rename", "1.1.1", "DB", "--why", "x"))
+        self.assertIn("cannot be empty", self.fail("rename", "1.1.1", "Primary database", "--why", " "))
+        self.ok("set", "1.1.1", "validated", "--chosen", "PostgreSQL 16 on RDS", "--reason", "ACID and native JSON", "--alternatives", "none", "--why", "ok")
+        self.ok("rename", "1.1.1", "Primary database", "--why", "naming convention")
+        out = self.ok("verify")
+        self.assertIn("OK", out)
+        self.assertNotIn("modified since", out, "the renamed block must not look like a post-validation edit")
+
+    def test_rename_tampering_is_detected(self):
+        self.start()
+        self.add("Database engine", question=Q)
+        self.ok("rename", "1.1", "Platform stack", "--why", "broader")
+        p = self.d / ".decisions" / "index.json"
+        p.write_text(p.read_text().replace("Platform stack", "Something else"))
+        rc, out, _ = self.dec("verify")
+        self.assertEqual(rc, 2)
+        self.assertIn("P1.title", out)
+
+
 class Integrity(Base):
     def setUp(self):
         super().setUp()

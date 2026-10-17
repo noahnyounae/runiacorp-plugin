@@ -26,7 +26,7 @@ CLI: `python3 ${CLAUDE_SKILL_DIR}/scripts/dec.py <cmd>` (below: `D <cmd>`). `D -
 init --lang xx | config [key value] | iter-new T | pack-new T [--iter I] | pack-rm P --why W
 add T --pack P --question Q [--doc f] [--chosen X --alternatives X --reason X] --why W
 detail ID [--question|--chosen|--alternatives|--reason X] --why W | set ID todo|doing|done|validated --why W [fields]
-move ID P --why W | merge KEEP ABSORB --why W [--title T] | review [P]
+rename ID T --why W | move ID P --why W | merge KEEP ABSORB --why W [--title T] | review [P]
 next [--all] | status | show ID | log -n N | verify | seal --why W [--rebase] | export | scan | import PLAN [--dry-run]
 questions [--all] | answers [--dry-run] | conflicts [--digest|--create|--pack|--dismiss A B --why W]
 ```

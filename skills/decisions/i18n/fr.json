@@ -233,5 +233,7 @@
  "conf.dismissed": "{a} / {b} écartée (ne sera plus signalée)",
  "conf.not_dismissed": "{a} / {b} n'est pas écartée",
  "conf.undismissed": "{a} / {b} sera de nouveau signalée",
- "conf.dismissed_list": "Paires écartées (non signalées) : {list}. En rétablir une : `conflicts --undismiss A B --why …`."
+ "conf.dismissed_list": "Paires écartées (non signalées) : {list}. En rétablir une : `conflicts --undismiss A B --why …`.",
+ "rename.same": "Le nouveau titre est identique au titre actuel",
+ "rename.done": "{ix} : « {a} » renommé en « {b} »"
 }

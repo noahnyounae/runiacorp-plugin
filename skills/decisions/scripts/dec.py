@@ -10,7 +10,7 @@ import argparse, fcntl, hashlib, json, os, re, subprocess, sys, unicodedata
 from datetime import datetime
 from pathlib import Path
 
-VERSION = "1.1.0"
+VERSION = "1.2.0"
 FORMAT = 3
 DIR = ".decisions"
 GENESIS = "0" * 64
@@ -258,16 +258,16 @@ def log(r, **e):
 
 def replay(entries):
     """Replay the journal into expected iterations/packs/decisions; report inconsistent transitions."""
-    I, P, C, D, issues = set(), {}, {}, set(), []
+    I, P, C, D, issues = {}, {}, {}, set(), []
     for no, e in entries:
         t, i = e.get("type"), str(e.get("id", ""))
         if t == "create":
             if i.startswith("C"):
                 C[i] = {"title": e.get("title"), "pack": e.get("pack"), "doc": e.get("doc"), "state": 0, "dh": None, "refs": e.get("refs") or [], **{f: e.get(f, "") for f in FIELDS}}
             elif i.startswith("P"):
-                P[i] = e.get("iter")
+                P[i] = {"iter": e.get("iter"), "title": e.get("title")}
             elif i.startswith("I"):
-                I.add(i)
+                I[i] = e.get("title")
         elif t in ("state", "regress") and i in C:
             frm, to = sidx(e.get("from")), sidx(e.get("to"))
             if frm != C[i]["state"]:
@@ -277,6 +277,15 @@ def replay(entries):
                 continue
             C[i]["state"] = to
             C[i]["dh"] = e.get("dochash") if to == 3 else None
+        elif t == "rename":
+            if i in C:
+                C[i]["title"] = e.get("to")
+                if C[i]["state"] == 3 and e.get("dochash"):
+                    C[i]["dh"] = e["dochash"]
+            elif i in P:
+                P[i]["title"] = e.get("to")
+            elif i in I:
+                I[i] = e.get("to")
         elif t == "detail" and i in C:
             C[i].update(e.get("fields") or {})
         elif t == "move" and i in C:
@@ -353,6 +362,11 @@ def check(r, with_replay=True):
         for name, a, b in (("p.iters", db["iterations"], I), ("p.packs", db["packs"], P), ("p.choices", db["choices"], C)):
             if set(a) != set(b):
                 probs.append(T(name, a=sorted(a), b=sorted(b)))
+        for src, rep_ in ((db["iterations"], I), (db["packs"], P)):
+            for k in set(src) & set(rep_):
+                want = rep_[k]["title"] if isinstance(rep_[k], dict) else rep_[k]
+                if src[k].get("title") != want:
+                    probs.append(T("p.field", id=k, f="title", a=src[k].get("title"), b=want))
         for k in set(db["choices"]) & set(C):
             c, j = db["choices"][k], C[k]
             for f in ("title", "pack", "doc", "state", "refs") + FIELDS:
@@ -716,6 +730,25 @@ def cmd_set(a):
     need(a.why, "why")
     upd = {f: clean_field(f, getattr(a, f)) for f in FIELDS if getattr(a, f)}
     print("\n".join(do_set(r, db, cid, parse_state(a.state), upd, a.why, a.force)))
+
+
+def cmd_rename(a):
+    r = root(); lock(r); guard(r); db = load(r)
+    k = resolve(db, a.id)
+    ent = db["choices"].get(k) or db["packs"].get(k) or db["iterations"].get(k)
+    title = need(a.title, "title")
+    if k in db["choices"] and len(title) < 4:
+        die("title_short")
+    if title == ent["title"]:
+        die("rename.same")
+    need(a.why, "why")
+    old, ent["title"], dh = ent["title"], title, None
+    if k in db["choices"]:  # the document block carries the title; a Validated decision gets its new document hash recorded
+        sync_doc(r, k, ent)
+        dh = fhash(r / ent["doc"]) if ent["state"] == 3 else None
+    log(r, type="rename", id=k, **{"from": old, "to": title}, why=a.why, dochash=dh)
+    save(r, db)
+    print(T("rename.done", ix=idx(db, k), a=old, b=title))
 
 
 def cmd_move(a):
@@ -1518,6 +1551,7 @@ def main():
         ("--dismiss", {"nargs": 2, "metavar": ("A", "B"), "help": "mark a pair as a false positive (needs --why)"}), ("--undismiss", {"nargs": 2, "metavar": ("A", "B"), "help": "flag a dismissed pair again (needs --why)"}), ("--max", {"type": int, "default": 60}), why=True)
     add("detail", cmd_detail, "set/correct the 4 fields of a decision", ("id", {}), ("--question", {}), ("--chosen", {}), ("--alternatives", {}), ("--reason", {}), why_required=True)
     add("set", cmd_set, "change a decision's state (todo|doing|done|validated); Done/Validated require detail", ("id", {}), ("state", {}), ("--question", {}), ("--chosen", {}), ("--alternatives", {}), ("--reason", {}), why_required=True, force=True)
+    add("rename", cmd_rename, "rename a decision, pack or iteration (the id/index never changes)", ("id", {}), ("title", {}), why_required=True)
     add("move", cmd_move, "move a decision to another pack", ("id", {}), ("pack", {}), why_required=True, force=True)
     add("merge", cmd_merge, "merge two decisions of one pack (first kept, second absorbed)", ("keep", {}), ("absorbed", {}), ("--title", F("new title for the kept decision")), why_required=True)
     add("review", cmd_review, "find mergeable decisions (full or near-full packs)", ("pack", {"nargs": "?"}), ("--all", {"action": "store_true"}))

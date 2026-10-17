@@ -2,6 +2,11 @@
 
 Format: [Keep a Changelog](https://keepachangelog.com/). Versioning: the `version` in `.claude-plugin/plugin.json` is the update signal for installed copies; bump it on every release.
 
+## [1.2.0] - 2026-10-18
+
+### Added
+- `rename`: rename a decision, a pack or an iteration (index and id unchanged). Journaled, replay-checked, refreshes the decision's document block and keeps a Validated decision's document hash consistent. Slash command `decisions-rename`.
+
 ## [1.1.0] - 2026-10-18
 
 ### Added
