@@ -12,7 +12,14 @@ More skills will be added under `skills/`; they all ship through this same plugi
 
 ## Install
 
-In Claude Code (or the same commands prefixed with `claude plugin …` in a shell):
+In a terminal:
+
+```
+claude plugin marketplace add noahnyounae/runiacorp-plugin
+claude plugin install runiacorp-plugin@runiacorp
+```
+
+Or inside a Claude Code session, where available (`/plugin` is not offered in every environment, e.g. the VS Code extension panel; use the terminal commands there):
 
 ```
 /plugin marketplace add noahnyounae/runiacorp-plugin
@@ -37,7 +44,9 @@ If you previously copied the `decisions` skill or its `decisions-*` commands int
 
 Say what you decided ("we choose PostgreSQL 16 for the database because …") or ask "what should I do next?". Or use the slash commands, all namespaced by the plugin:
 
-`/runiacorp-plugin:decisions-next`, `-status`, `-add`, `-set`, `-detail`, `-move`, `-merge`, `-review`, `-pack-new`, `-pack-rm`, `-iter-new`, `-show`, `-log`, `-verify`, `-seal`, `-export`, `-scan`, `-import`, `-config`, `-init`.
+`/runiacorp-plugin:decisions-next`, `-questions`, `-answers`, `-conflicts`, `-status`, `-add`, `-set`, `-detail`, `-move`, `-merge`, `-review`, `-pack-new`, `-pack-rm`, `-iter-new`, `-show`, `-log`, `-verify`, `-seal`, `-export`, `-scan`, `-import`, `-config`, `-init`.
+
+Typical loop: `-next` (what is open) → `-questions` (a Markdown file of open questions) → answer in the file → `-answers` → `-conflicts` (contradictions become new decisions to settle).
 
 Full reference: [skills/decisions/decisions.md](skills/decisions/decisions.md). To avoid permission prompts on a trusted machine, allow `Skill(runiacorp-plugin:decisions)` and `Bash(python3 */skills/decisions/scripts/dec.py *)` in your Claude Code permissions.
 

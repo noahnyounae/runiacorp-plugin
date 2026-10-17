@@ -146,6 +146,130 @@ class Packs(Base):
         self.assertIn("OK", self.ok("verify"))
 
 
+class NextFilter(Base):
+    def test_next_hides_validated_packs_unless_all(self):
+        self.start(packs=2)
+        self.add("Database engine", question=Q)
+        self.add("Cache layer", pack="1.2", question="Which cache sits in front of the database?")
+        self.ok("set", "1.1.1", "validated", "--chosen", "PostgreSQL 16 on RDS", "--reason", "ACID and native JSON", "--alternatives", "none", "--why", "ok")
+        out = self.ok("next")
+        self.assertNotIn("Database engine", out)
+        self.assertIn("Cache layer", out)
+        self.assertIn("1 validated pack(s) hidden", out)
+        full = self.ok("next", "--all")
+        self.assertIn("Database engine", full)
+        self.assertNotIn("hidden", full)
+
+
+class OpenQuestions(Base):
+    def setUp(self):
+        super().setUp()
+        self.start()
+        self.add("Database engine", question=Q)
+        self.add("Framework API", question="Which framework exposes the REST API?")
+        self.add("Cache layer", question="Which cache sits in front of the database?")
+        self.qf = self.d / ".decisions" / "questions.md"
+
+    def fill(self, cid, **vals):
+        text = self.qf.read_text()
+        head, rest = text.split(f"<!-- q:{cid} -->")
+        block, tail = rest.split(f"<!-- /q:{cid} -->")
+        for label, value in vals.items():
+            block = re.sub(rf"(- {label}:).*", lambda m: f"{m.group(1)} {value}", block)
+        self.qf.write_text(head + f"<!-- q:{cid} -->" + block + f"<!-- /q:{cid} -->" + tail)
+
+    def test_roundtrip_dry_run_partial_and_full_answers(self):
+        self.assertIn("3 open question(s)", self.ok("questions"))
+        text = self.qf.read_text()
+        self.assertEqual(len(re.findall(r"<!-- q:C\d+ -->", text)), 3)
+        self.assertIn("**Question settled**: Which framework", text)
+        self.fill("C1", **{"Chosen option": "PostgreSQL 16 on RDS", "Reason": "ACID and native JSON"})
+        self.fill("C2", **{"Chosen option": "FastAPI 0.110 with Pydantic v2"})
+        before = self.ok("verify")
+        self.assertIn("[dry-run] 1.1.1: To do -> Done", self.ok("answers", "--dry-run"))
+        self.assertEqual(before, self.ok("verify"), "dry-run must not write")
+        out = self.ok("answers")
+        self.assertIn("1.1.1: To do -> Done", out)
+        self.assertIn("1.1.2: To do -> Doing", out)
+        self.assertIn("Answers: 2 applied", out)
+        self.assertIn("OK", self.ok("verify"))
+        self.assertIn("FastAPI 0.110", self.ok("show", "1.1.2"))
+        self.assertIn("answered in questions.md", self.ok("log", "-n", "6"))
+        self.assertIn("2 open question(s)", self.ok("questions"))  # the finished one drops out
+        self.assertNotIn("<!-- q:C1 -->", self.qf.read_text())
+
+    def test_errors_are_reported_per_decision_and_overwrite_is_guarded(self):
+        self.ok("questions")
+        self.fill("C1", **{"Chosen option": "PostgreSQL 16 on RDS", "Reason": "ACID and native JSON", "State": "validated"})
+        self.fill("C2", **{"Chosen option": "short"})
+        self.fill("C3", **{"Chosen option": "Redis 7 in cluster mode", "Reason": "sub-millisecond reads"})
+        self.assertIn("unapplied", self.fail("questions"))
+        out = self.ok("answers")  # one bad block must not stop the others
+        self.assertIn("1.1.1: not applied", out)
+        self.assertIn("Rejected alternatives", out)
+        self.assertIn("1.1.2: not applied", out)
+        self.assertIn("too vague", out)
+        self.assertIn("1.1.3: To do -> Done", out)
+        self.assertIn("2 error(s)", out)
+        self.assertIn("OK", self.ok("verify"))
+        self.ok("questions", "--force")
+
+    def test_closed_since_generation_is_skipped_and_cross_language_parse(self):
+        self.ok("config", "lang", "fr", "--why", "switch")
+        self.ok("questions", "--force")
+        self.assertIn("Option retenue", self.qf.read_text())
+        self.ok("config", "lang", "en", "--why", "switch back")  # file written in French, project now English
+        self.fill("C1", **{"Option retenue": "PostgreSQL 16 on RDS", "Raison": "ACID and native JSON"})
+        self.ok("set", "1.1.1", "done", "--chosen", "MySQL 8 managed", "--reason", "managed by the platform team", "--why", "changed meanwhile")
+        out = self.ok("answers")
+        self.assertIn("skipped", out)
+        self.assertIn("MySQL 8", self.ok("show", "1.1.1"))
+
+
+class Conflicts(Base):
+    def setUp(self):
+        super().setUp()
+        self.start()
+        self.add("Database engine", question=Q, chosen="PostgreSQL 16 on RDS", reason="ACID and native JSON", alternatives="MySQL 8 (weak replication), MongoDB (no joins)")
+        self.add("Analytics store", question="Which store holds the analytics events?", chosen="MongoDB 7 cluster", reason="flexible event schema")
+
+    def test_detects_creates_tracks_and_dismisses(self):
+        out = self.ok("conflicts", "--digest")
+        self.assertIn("Rejected vs chosen", out)
+        self.assertIn("1.1.1 rejected «MongoDB», which 1.1.2 chose", out)
+        self.assertIn("1.1.2 | Which store holds the analytics events? | MongoDB 7 cluster", out)
+        out = self.ok("conflicts", "--create")
+        self.assertIn("created to resolve 1.1.1 / 1.1.2", out)
+        again = self.ok("conflicts")
+        self.assertIn("tracked by", again)
+        self.assertNotIn("Open resolving decisions", again)
+        self.assertIn("Conflicts to resolve", self.ok("next"))
+        self.assertIn("OK", self.ok("verify"))
+        self.assertIn("1.1.1 / 1.1.2", self.ok("show", "1.2.1"))
+
+    def test_same_question_dismiss_and_pack_command(self):
+        self.add("Primary database", question=Q, chosen="Oracle 23 enterprise", reason="existing licences")
+        out = self.ok("conflicts")
+        self.assertIn("Same question, different answers", out)
+        self.ok("conflicts", "--dismiss", "1.1.1", "1.1.3", "--why", "legacy system migrates away")
+        out = self.ok("conflicts")
+        self.assertNotIn("Same question", out)
+        self.assertIn("Dismissed pairs", out)
+        self.ok("conflicts", "--undismiss", "1.1.1", "1.1.3", "--why", "reconsidered")
+        self.assertIn("Same question", self.ok("conflicts"))
+        self.ok("conflicts", "--dismiss", "1.1.1", "1.1.3", "--why", "legacy system migrates away again")
+        self.assertIn("OK", self.ok("verify"))
+        ix = re.search(r"Conflicts pack: (\S+)", self.ok("conflicts", "--pack")).group(1)
+        self.ok("add", "Resolve semantic clash", "--pack", ix, "--question", "Do 1.1.1 and 1.1.2 contradict on data residency?", "--refs", "1.1.1,1.1.2", "--why", "found by reading")
+        self.assertIn("OK", self.ok("verify"))
+
+    def test_merge_rewires_conflict_references(self):
+        self.ok("conflicts", "--create")
+        self.add("Analytics store v2", question="Which store holds the analytics events?", chosen="MongoDB 7 cluster", reason="flexible event schema")
+        self.ok("merge", "1.1.2", "1.1.3", "--why", "duplicate")
+        self.assertIn("OK", self.ok("verify"))
+
+
 class Integrity(Base):
     def setUp(self):
         super().setUp()
@@ -249,7 +373,7 @@ class Languages(Base):
         src = DEC.read_text()
         used = set(re.findall(r"""\b(?:T|die)\(["']([\w.]+)["'][,)]""", src))
         self.assertFalse(used - set(en), used - set(en))
-        dynamic = ("state.", "field.", "field.short.", "what.", "kind.", "h.", "step.", "journal.", "p.", "w.", "cause.")
+        dynamic = ("state.", "field.", "field.short.", "what.", "kind.", "h.", "step.", "journal.", "p.", "w.", "cause.", "conf.type.", "answers.")
         unused = {k for k in en if k not in used and not k.startswith(dynamic)}
         self.assertFalse(unused, unused)
 
@@ -348,7 +472,8 @@ class CiCd(unittest.TestCase):
         return p.returncode, p.stdout, p.stderr
 
     def test_release_notes_match_or_refuse(self):
-        rc, out, _ = self.tool("release_notes.py", "v1.0.0")
+        v = json.loads((REPO / ".claude-plugin" / "plugin.json").read_text())["version"]
+        rc, out, _ = self.tool("release_notes.py", f"v{v}")
         self.assertEqual(rc, 0)
         self.assertIn("decisions", out)
         rc, _, err = self.tool("release_notes.py", "v9.9.9")

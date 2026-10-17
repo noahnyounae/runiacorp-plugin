@@ -48,6 +48,13 @@ SPEC = [
     ("move", "Move a decision to another pack", "<index> <pack> --why \"…\"", "inject", WRITE.replace("<cmd>", "move")),
     ("merge", "Merge two decisions of one pack (the first is kept, the second absorbed)", "<keep> <absorb> --why \"…\" [--title \"…\"]", "inject",
      "The kept decision takes the lowest state and inherits missing fields; the absorbed document is kept and referenced. " + WRITE.replace("<cmd>", "merge")),
+    ("questions", "Write every open question to a Markdown file, to answer them one by one", "[--all] [--out file] [--force]", "inject",
+     f"Tell the user where the file is and how it works: under each question, fill the answer lines (chosen option + reason to finish a decision; alternatives and State = validated to validate), then run `/{PLUGIN}:decisions-answers`. "
+     f"Offer to go through the questions one by one here instead (ask each in turn, then save with `{RUN} set …`). If it refused because of unapplied answers, offer `/{PLUGIN}:decisions-answers` first. {LANG}"),
+    ("answers", "Read the filled questions document and apply the answers", "[--file path] [--dry-run]", "inject",
+     f"Summarize in a few lines: what was applied, what was saved as detail only, what was skipped, and each error with what is missing. Preview with `--dry-run` only if the user asks. Never fill in missing answers yourself. {LANG}"),
+    ("conflicts", "Check decisions for contradictions or conflicts and open resolving decisions", "[--create] [--pack] [--dismiss A B --why …]", "inject-digest",
+     "{{file:references/conflicts.md}}\n\n" + LANG),
     ("init", "Initialize the decision registry in the current project", "[--lang code] [--doc-dir path] [--max-pack N]", "run",
      f"Detect the user's language (ISO code) and run `{RUN} init --lang <code> $ARGUMENTS` with Bash (omit --lang only if `$ARGUMENTS` already has it). "
      f"Then state the detected `doc_dir` and offer to adjust it (`config`) to the project's conventions. If the project has docs, git history or past chats, offer `/{PLUGIN}:decisions-scan`. "
@@ -62,9 +69,14 @@ SPEC = [
 
 
 def render(name, desc, hint, mode, note):
+    import re
+    note = re.sub(r"\{\{file:([^}]+)\}\}", lambda m: (ROOT / "skills" / "decisions" / m.group(1)).read_text(encoding="utf-8").strip(), note)
+    note = re.sub(r"\bD (?=[a-z])", f"{RUN} ", note)  # the reference writes the CLI as `D`
+    extra = " --digest" if mode == "inject-digest" else ""
+    mode = "inject" if mode == "inject-digest" else mode
     fm = ["---", f"description: {json.dumps(desc, ensure_ascii=False)}", f"argument-hint: {json.dumps(hint, ensure_ascii=False)}",
           "disable-model-invocation: true", f"allowed-tools: Bash({RUN} *)", "---", ""]
-    body = f"!`{RUN} {name} $ARGUMENTS 2>&1 || true`\n\n{note}\n" if mode == "inject" else f"{note}\n"
+    body = f"!`{RUN} {name}{extra} $ARGUMENTS 2>&1 || true`\n\n{note}\n" if mode == "inject" else f"{note}\n"
     return "\n".join(fm) + body
 
 

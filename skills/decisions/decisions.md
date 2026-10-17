@@ -44,15 +44,18 @@ Slash name = `/runiacorp-plugin:decisions-<command>`.
 | `init [--lang xx] [--doc-dir d] [--max-pack N]` | create `.decisions/` (project language, document folder auto-detected: `docs/decisions`, `doc/decisions`…) |
 | `config [key value] [--why …]` | show/set `lang`, `max_pack`, `min_field`, `doc_dir` (changes are journaled) |
 | `iter-new "title" [--why] [--force]` | open an iteration (previous must be Validated) |
-| `pack-new "title" [--iter N] [--kind link\|time]` | create a pack |
+| `pack-new "title" [--iter N] [--kind link\|time\|conflict]` | create a pack (`conflict` holds decisions that resolve contradictions) |
 | `pack-rm PACK --why …` | delete an empty pack |
-| `add "title" --pack P --question Q [--doc f] [--chosen --alternatives --reason] [--why] [--no-overflow] [--force]` | add a decision; document created, or its block appended; default document `<doc_dir>/<slug>.md` |
+| `add "title" --pack P --question Q [--doc f] [--chosen --alternatives --reason] [--refs A,B] [--why] [--no-overflow] [--force]` | add a decision; document created, or its block appended; default document `<doc_dir>/<slug>.md` |
+| `questions [--all] [--out f] [--force]` | write every open question (todo/doing) to `.decisions/questions.md`; refuses to overwrite unapplied answers unless `--force` |
+| `answers [--file f] [--dry-run]` | read the filled document and apply the answers (see below) |
+| `conflicts [--digest] [--create] [--pack] [--dismiss|--undismiss A B --why …]` | contradiction/conflict check between decisions (see below) |
 | `detail ID [--question --chosen --alternatives --reason] --why …` | set/correct the 4 fields (refused on Validated) |
 | `set ID STATE --why … [fields] [--force]` | change state; done/validated require the fields (can be passed in the same call); validating records the document hash; regression allowed with a reason (`--force` if a later iteration started) |
 | `move ID PACK --why … [--force]` | move to another pack (refused into a full pack) |
 | `merge KEEP ABSORB --why … [--title T]` | merge two decisions of one pack: lowest state kept, missing fields inherited, absorbed document kept and referenced |
 | `review [PACK] [--all]` | merge candidates (same document, similar titles) in full or near-full packs |
-| `next [--all] [--width N]` | one Markdown table per pack: index, decision, question, chosen, alternatives, reason, state, next step (names missing fields). Also writes the **full** table to `.decisions/next.md` |
+| `next [--all] [--width N]` | one Markdown table per pack that is **not yet Validated** (a count of hidden Validated packs is shown): index, decision, question, chosen, alternatives, reason, state, next step (names missing fields). `--all` also shows Validated packs and every iteration. Also writes the **full** table to `.decisions/next.md` |
 | `status [--all]` | tree view |
 | `show ID` | record + full history |
 | `log [-n N] [--hash]` | recent journal events |
@@ -61,6 +64,26 @@ Slash name = `/runiacorp-plugin:decisions-<command>`.
 | `seal --why … [--rebase]` | chain a legacy journal / rebuild the chain after an accepted alteration |
 | `scan [--max N] [--session ID --grep re --context]` | inventory of an existing project |
 | `import PLAN [--dry-run] [--append]` | import a retroactive plan |
+
+## Answering open questions in a document
+
+`questions` writes `.decisions/questions.md`: one block per decision that is still `todo` or `doing` (active iteration; `--all` for every iteration), with the question and pre-filled answer lines (chosen option, alternatives, reason, state). Fill them in, in any editor, one by one; leave a line empty to skip it. Then `answers` reads the file and, per decision:
+
+- chosen option + reason filled → the decision becomes **done**; only some fields filled on a `todo` decision → **doing**, the fields saved;
+- to **validate**, also give the alternatives and set the State line to `validated` (an explicit act);
+- every value goes through the usual precision rules; a block that fails is reported (what is missing) and the others still apply; a decision closed meanwhile is skipped; a stale lower state in the file is ignored;
+- `answers --dry-run` previews; `questions` refuses to overwrite a file holding unapplied answers (`--force` to override). Labels are recognized in any shipped language, so a file generated in French still parses after switching the project to English.
+
+Every applied answer is journaled ("answered in questions.md"). You can also answer one by one in the chat; Claude saves each with `set`/`detail`.
+
+## Conflict check
+
+`conflicts` looks for contradictions between decisions. Heuristic leads (cheap, no tokens): a decision **rejects** what another **chose**; two decisions answer the **same question** differently. `--digest` adds a compact list of closed decisions so Claude can also catch semantic contradictions (incompatible choices, mutually exclusive constraints). Then:
+
+- `--create` opens one resolving decision per new candidate in the pack "Conflicts to resolve" (kind `conflict`), linked to both decisions through `refs`; it stays in `next` until Validated, so a conflict cannot be forgotten. The conflicting decisions themselves are never modified.
+- `add --pack <index from conflicts --pack> --refs A,B` opens one for a conflict Claude found by reading.
+- `--dismiss A B --why …` records a false positive (journaled, not flagged again, listed in every report); `--undismiss A B --why …` restores it.
+- Already-tracked pairs are shown as such and never duplicated.
 
 ## Integrity (transparency)
 
@@ -82,6 +105,7 @@ Each journal entry holds `prev` and `h` (sha256 of its content). `index.json` st
   index.json    structure and states (never edit)
   log.jsonl     chained journal (append-only)
   next.md       last `next` table, untruncated (generated)
+  questions.md  open questions to answer, then read by `answers` (generated)
   export.md     recap (generated)
   i18n/         optional project-local language catalogs
   log.jsonl.before-seal-*   backups made by seal

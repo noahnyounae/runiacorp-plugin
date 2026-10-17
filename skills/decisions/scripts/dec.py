@@ -10,7 +10,7 @@ import argparse, fcntl, hashlib, json, os, re, subprocess, sys, unicodedata
 from datetime import datetime
 from pathlib import Path
 
-VERSION = "1.0.0"
+VERSION = "1.1.0"
 FORMAT = 3
 DIR = ".decisions"
 GENESIS = "0" * 64
@@ -66,9 +66,16 @@ def T(key, **kw):
     return s.format(**kw) if kw else s
 
 
+class Die(Exception):
+    """A user-facing error; the CLI prints it and exits 1, batch commands report it per item (`plain`)."""
+
+    def __init__(self, plain):
+        self.plain = plain
+        super().__init__(T("err", msg=plain))
+
+
 def die(key, **kw):
-    print(T("err", msg=T(key, **kw)), file=sys.stderr)
-    sys.exit(1)
+    raise Die(T(key, **kw))
 
 
 def maxp():
@@ -251,12 +258,12 @@ def log(r, **e):
 
 def replay(entries):
     """Replay the journal into expected iterations/packs/decisions; report inconsistent transitions."""
-    I, P, C, issues = set(), {}, {}, []
+    I, P, C, D, issues = set(), {}, {}, set(), []
     for no, e in entries:
         t, i = e.get("type"), str(e.get("id", ""))
         if t == "create":
             if i.startswith("C"):
-                C[i] = {"title": e.get("title"), "pack": e.get("pack"), "doc": e.get("doc"), "state": 0, "dh": None, **{f: e.get(f, "") for f in FIELDS}}
+                C[i] = {"title": e.get("title"), "pack": e.get("pack"), "doc": e.get("doc"), "state": 0, "dh": None, "refs": e.get("refs") or [], **{f: e.get(f, "") for f in FIELDS}}
             elif i.startswith("P"):
                 P[i] = e.get("iter")
             elif i.startswith("I"):
@@ -281,9 +288,15 @@ def replay(entries):
                 keep["title"] = e["title"]
             keep.update(e.get("fields") or {})
             keep["dh"] = e.get("dochash") if keep["state"] == 3 else None
+            for o in C.values():
+                o["refs"] = list(dict.fromkeys(e["into"] if x == i else x for x in o["refs"]))
+        elif t == "dismiss":
+            D.add(frozenset(e.get("pair") or []))
+        elif t == "undismiss":
+            D.discard(frozenset(e.get("pair") or []))
         elif t == "delete" and i in P:
             del P[i]
-    return I, P, C, issues
+    return I, P, C, D, issues
 
 
 def pack_count(db, pid):
@@ -335,15 +348,15 @@ def check(r, with_replay=True):
         if not synced:
             probs.append(T("p.head"))
     if with_replay and db is not None and not probs:
-        I, P, C, issues = replay(ents)
+        I, P, C, D, issues = replay(ents)
         probs += issues
         for name, a, b in (("p.iters", db["iterations"], I), ("p.packs", db["packs"], P), ("p.choices", db["choices"], C)):
             if set(a) != set(b):
                 probs.append(T(name, a=sorted(a), b=sorted(b)))
         for k in set(db["choices"]) & set(C):
             c, j = db["choices"][k], C[k]
-            for f in ("title", "pack", "doc", "state") + FIELDS:
-                if c.get(f, "" if f in FIELDS else None) != j[f]:
+            for f in ("title", "pack", "doc", "state", "refs") + FIELDS:
+                if c.get(f, [] if f == "refs" else ("" if f in FIELDS else None)) != j[f]:
                     a, b = (SN(c[f]), SN(j[f])) if f == "state" else (c.get(f), j[f])
                     probs.append(T("p.field", id=k, f=f, a=a, b=b))
             if c.get("state") == 3:
@@ -352,6 +365,8 @@ def check(r, with_replay=True):
                     warns.append(T("w.doc_missing", id=k, doc=c["doc"]))
                 elif j["dh"] and fhash(p) != j["dh"]:
                     warns.append(T("w.doc_changed", id=k, doc=c["doc"]))
+        if {frozenset(x) for x in db.get("dismissed", [])} != D:
+            probs.append(T("p.dismissed"))
     return {"n": n, "unsealed": unsealed, "probs": probs, "warns": warns, "head": head, "synced": synced}
 
 
@@ -588,34 +603,46 @@ def cmd_pack_rm(a):
     print(T("pack_deleted", ix=ix, id=p))
 
 
-def cmd_add(a):
-    r = root(); lock(r); guard(r); db = load(r)
-    a.pack = resolve(db, a.pack)
-    if a.pack not in db["packs"]:
-        die("not_pack", id=a.pack)
-    if iter_state(db, db["packs"][a.pack]["iter"]) == 3 and not a.force:
+def new_decision(r, db, title, pack, fields, doc=None, why=None, refs=None, no_overflow=False, force=False):
+    """Create a decision (with overflow handling). Returns (id, pack used, overflow note, document created, document path)."""
+    if pack not in db["packs"]:
+        die("not_pack", id=pack)
+    if iter_state(db, db["packs"][pack]["iter"]) == 3 and not force:
         die("iter_validated_add")
-    title = need(a.title, "title")
+    title = need(title, "title")
     if len(title) < 4:
         die("title_short")
-    fields = {f: clean_field(f, getattr(a, f)) for f in FIELDS if getattr(a, f)}
-    docp, rel = docpath(r, a.doc or f"{cfg()['doc_dir']}/{slug(title)}.md")
+    fields = {f: clean_field(f, v) for f, v in fields.items() if v}
+    docp, rel = docpath(r, doc or f"{cfg()['doc_dir']}/{slug(title)}.md")
     before = derived(db)
-    target, note = a.pack, None
-    if pack_count(db, a.pack) >= maxp():
-        print(T("pack_full", ix=idx(db, a.pack), n=maxp()))
-        print_candidates(db, a.pack, top=3)
-        if a.no_overflow:
+    target, note = pack, None
+    if pack_count(db, pack) >= maxp():
+        print(T("pack_full", ix=idx(db, pack), n=maxp()))
+        print_candidates(db, pack, top=3)
+        if no_overflow:
             die("overflow_refused")
-        target, made = overflow_pack(r, db, a.pack, a.why)
-        note = T("overflow_note", ix=idx(db, a.pack), to=idx(db, target), title=db["packs"][target]["title"]) + (T("overflow_created") if made else "")
+        target, made = overflow_pack(r, db, pack, why)
+        note = T("overflow_note", ix=idx(db, pack), to=idx(db, target), title=db["packs"][target]["title"]) + (T("overflow_created") if made else "")
     c = nid(db, "choices", "C")
-    entry = {"title": title, "pack": target, "doc": rel, "state": 0, "n": bump(db["packs"][target]), **{f: fields.get(f, "") for f in FIELDS}}
+    entry = {"title": title, "pack": target, "doc": rel, "state": 0, "n": bump(db["packs"][target]), "refs": refs or [], **{f: fields.get(f, "") for f in FIELDS}}
     created = not docp.exists()
     db["choices"][c] = entry
     sync_doc(r, c, entry)
-    log(r, type="create", id=c, title=title, pack=target, doc=rel, doc_created=created, **fields, why=a.why or T("why.create"))
-    commit(r, db, before, a.why or T("why.create"), T("cause.add", id=c))
+    log(r, type="create", id=c, title=title, pack=target, doc=rel, doc_created=created, refs=refs or None, **fields, why=why or T("why.create"))
+    commit(r, db, before, why or T("why.create"), T("cause.add", id=c))
+    return c, target, note, created, rel
+
+
+def cmd_add(a):
+    r = root(); lock(r); guard(r); db = load(r)
+    pack = resolve(db, a.pack)
+    refs = []
+    for x in filter(None, (a.refs or "").split(",")):
+        k = resolve(db, x.strip())
+        if k not in db["choices"]:
+            die("not_choice", id=k)
+        refs.append(k)
+    c, target, note, created, rel = new_decision(r, db, a.title, pack, {f: getattr(a, f) for f in FIELDS}, a.doc, a.why, refs, a.no_overflow, a.force)
     print(T("added", ix=idx(db, c), id=c, pack=target, doc=rel) + (T("doc_created") if created else T("doc_block_added")))
     if note:
         print(note)
@@ -644,17 +671,12 @@ def cmd_detail(a):
     print(T("detail_updated", ix=idx(db, k), labels=", ".join(T("field." + f) for f in upd)))
 
 
-def cmd_set(a):
-    r = root(); lock(r); guard(r); db = load(r)
-    a.id = resolve(db, a.id)
-    if a.id not in db["choices"]:
-        die("not_choice", id=a.id)
-    need(a.why, "why")
-    c = db["choices"][a.id]
-    new, old = parse_state(a.state), c["state"]
+def do_set(r, db, cid, new, upd, why, force=False, dry=False):
+    """Change a decision's state (with optional field updates). Raises Die on any refusal. Returns output lines."""
+    c = db["choices"][cid]
+    old = c["state"]
     if new == old:
-        die("already_state", id=a.id, state=SN(old))
-    upd = {f: clean_field(f, getattr(a, f)) for f in FIELDS if getattr(a, f)}
+        die("already_state", id=cid, state=SN(old))
     upd = {f: v for f, v in upd.items() if c.get(f) != v}
     if new > old:
         miss = missing({**c, **upd}, new) if new >= 2 else ([] if c.get("question") or "question" in upd else ["question"])
@@ -665,22 +687,35 @@ def cmd_set(a):
     if new < old:
         cur = int(db["packs"][c["pack"]]["iter"][1:])
         later = [k for k in db["iterations"] if int(k[1:]) > cur and iter_state(db, k) > 0]
-        if later and not a.force:
+        if later and not force:
             die("regress_later", later=later)
+    if dry:
+        return [T("answers.would", ix=idx(db, cid), a=SN(old), b=SN(new))]
     before = derived(db)
     if upd:
-        log(r, type="detail", id=a.id, fields=upd, why=a.why)
+        log(r, type="detail", id=cid, fields=upd, why=why)
         c.update(upd)
-    sync_doc(r, a.id, c)
+    sync_doc(r, cid, c)
     dh = fhash(r / c["doc"]) if new == 3 else None
     c["state"] = new
-    log(r, type="regress" if new < old else "state", id=a.id, **{"from": SK[old], "to": SK[new]}, why=a.why, dochash=dh)
-    commit(r, db, before, a.why, T("cause.set", id=a.id, state=SK[new]))
-    print(T("set_done", ix=idx(db, a.id), a=SN(old), b=SN(new)) + (T("regress_mark") if new < old else ""))
+    log(r, type="regress" if new < old else "state", id=cid, **{"from": SK[old], "to": SK[new]}, why=why, dochash=dh)
+    commit(r, db, before, why, T("cause.set", id=cid, state=SK[new]))
+    out = [T("set_done", ix=idx(db, cid), a=SN(old), b=SN(new)) + (T("regress_mark") if new < old else "")]
     for k, v in derived(db).items():
         if before.get(k) != v:
             kind, ident = k.split(":")
-            print(T("derived_line", kind=T(f"kind.{kind}"), ix=idx(db, ident), a=SN(before.get(k, 0)), b=SN(v)))
+            out.append(T("derived_line", kind=T(f"kind.{kind}"), ix=idx(db, ident), a=SN(before.get(k, 0)), b=SN(v)))
+    return out
+
+
+def cmd_set(a):
+    r = root(); lock(r); guard(r); db = load(r)
+    cid = resolve(db, a.id)
+    if cid not in db["choices"]:
+        die("not_choice", id=cid)
+    need(a.why, "why")
+    upd = {f: clean_field(f, getattr(a, f)) for f in FIELDS if getattr(a, f)}
+    print("\n".join(do_set(r, db, cid, parse_state(a.state), upd, a.why, a.force)))
 
 
 def cmd_move(a):
@@ -733,6 +768,8 @@ def cmd_merge(a):
         sync_doc(r, ka, A)
     dh = fhash(r / A["doc"]) if new == 3 else None
     del db["choices"][kb]
+    for o in db["choices"].values():
+        o["refs"] = list(dict.fromkeys(ka if x == kb else x for x in o.get("refs", [])))
     log(r, type="merge", id=kb, into=ka, **{"from": ib, "to": ia}, why=a.why, title=a.title, fields=copied or None, doc_appended=appended, dochash=dh)
     commit(r, db, before, a.why, T("cause.merge", a=ia, b=ib))
     print(T("merge.done", b=ib, a=ia, title=A["title"], state=T("merge.state", a=SN(old), b=SN(new)) if new != old else "", ix=idx(db, A["pack"]), n=pack_count(db, A["pack"]), max=maxp()))
@@ -822,8 +859,12 @@ def render_next(db, a, w, res):
         cs = [c for c in db["choices"].values() if db["packs"][c["pack"]]["iter"] == i]
         nv = sum(1 for c in cs if c["state"] == 3)
         out += [T("next.iter", ix=idx(db, i), title=db["iterations"][i]["title"], state=SN(iter_state(db, i)), v=nv, n=len(cs)), ""]
+        hidden = 0
         for p, pk in db["packs"].items():
             if pk["iter"] != i:
+                continue
+            if pack_state(db, p) == 3 and not a.all:  # validated packs need no attention
+                hidden += 1
                 continue
             pcs = sorted([(k, c) for k, c in db["choices"].items() if c["pack"] == p], key=lambda x: x[1]["n"])
             out += [T("next.pack", ix=idx(db, p), title=esc(pk["title"]), n=len(pcs), max=maxp(), state=SN(pack_state(db, p))), ""]
@@ -835,6 +876,8 @@ def render_next(db, a, w, res):
             for k, c in pcs:
                 out.append(f"| {idx(db, k)} | {esc(c['title'])} | {cell(c, 'question', w)} | {cell(c, 'chosen', w)} | {cell(c, 'alternatives', w)} | {cell(c, 'reason', w)} | {SN(c['state'])} | {step(c)} |")
             out.append("")
+        if hidden:
+            out += [T("next.hidden", n=hidden), ""]
     if act is None:
         out.append(T("next.all_done"))
     else:
@@ -916,7 +959,7 @@ def cmd_seal(a):
         die("seal.need_rebase")
     try:
         old_head = tail_hash(r)
-    except SystemExit:
+    except Die:
         old_head = None
     lp = r / DIR / "log.jsonl"
     backup = r / DIR / f"log.jsonl.before-seal-{datetime.now().strftime('%Y%m%dT%H%M%S')}"
@@ -967,6 +1010,229 @@ def cmd_export(a):
     path = r / DIR / (a.out or "export.md")
     path.write_text("\n".join(out) + "\n", encoding="utf-8")
     print(T("export.done", path=path))
+
+
+# ---------------------------------------------------------------- open questions document
+def ikey(db, k):
+    return tuple(int(x) for x in idx(db, k).split("."))
+
+
+def catalogs():
+    files = list(PLUG_I18N.glob("*.json")) + (list((_ctx["root"] / DIR / "i18n").glob("*.json")) if _ctx["root"] else [])
+    return [_read_json(f) for f in files]
+
+
+def label_map():
+    """Normalized label -> field key, across every catalog (a file filled in under another language still parses)."""
+    m = {}
+    for cat in catalogs():
+        for k in FIELDS:
+            if cat.get(f"field.{k}"):
+                m[norm(cat[f"field.{k}"])] = k
+        if cat.get("q.state"):
+            m[norm(cat["q.state"])] = "state"
+    return m
+
+
+def parse_blocks(text):
+    """[(decision id, {field: value})] from the `<!-- q:C1 -->` blocks of a questions document."""
+    lm, ph = label_map(), {norm(c["doc.todo"]) for c in catalogs() if c.get("doc.todo")}
+    out = []
+    for m in re.finditer(r"<!-- q:(C\d+) -->(.*?)<!-- /q:\1 -->", text, re.S):
+        vals, cur = {}, None
+        for line in m.group(2).splitlines():
+            x = re.match(r"^\s*[-*]\s*([^:]+?)\s*:\s*(.*)$", line)
+            if x and norm(x.group(1)) in lm:
+                cur = lm[norm(x.group(1))]
+                vals[cur] = x.group(2).strip()
+            elif cur and line.strip():
+                vals[cur] = f"{vals[cur]} {line.strip()}".strip()
+        out.append((m.group(1), {k: ("" if norm(re.sub(r"<!--.*?-->", "", v)) in ph else re.sub(r"<!--.*?-->", "", v).strip()) for k, v in vals.items()}))
+    return out
+
+
+def pending_answers(db, text):
+    names, n = state_names(), 0
+    for cid, v in parse_blocks(text):
+        c = db["choices"].get(cid)
+        if c and c["state"] < 2 and (any(v.get(f) and v[f] != c.get(f) for f in FIELDS) or names.get(norm(v.get("state", "")), -1) > c["state"]):
+            n += 1
+    return n
+
+
+def cmd_questions(a):
+    r = root(); db = load(r); res = check(r)
+    path = docpath(r, a.out)[0] if a.out else r / DIR / "questions.md"
+    act = active_iter(db)
+    qs = sorted([(k, c) for k, c in db["choices"].items() if c["state"] < 2 and (a.all or db["packs"][c["pack"]]["iter"] == act)], key=lambda x: ikey(db, x[0]))
+    if not qs:
+        print(T("questions.empty")); return
+    if path.exists() and not a.force and (n := pending_answers(db, path.read_text(encoding="utf-8"))):
+        die("questions.pending", path=path.name, n=n)
+    L = [T("questions.title"), "", T("questions.help"), "", T("questions.head", date=datetime.now().strftime("%Y-%m-%d %H:%M"), h=(res["head"] or "-")[:8]), ""]
+    for k, c in qs:
+        L += [T("questions.item", ix=idx(db, k), title=c["title"], state=SN(c["state"]), pack=f"{idx(db, c['pack'])} {db['packs'][c['pack']]['title']}"), "",
+              f"**{T('field.question')}**: {c.get('question') or '—'}", "", f"<!-- q:{k} -->"]
+        L += [f"- {T('field.' + f)}: {c.get(f, '')}" for f in ("chosen", "alternatives", "reason")]
+        L += [f"- {T('q.state')}: {SN(c['state'])}", f"<!-- /q:{k} -->", ""]
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("\n".join(L), encoding="utf-8")
+    print(T("questions.done", n=len(qs), path=path.relative_to(r)))
+
+
+def cmd_answers(a):
+    r = root()
+    if not a.dry_run:
+        lock(r); guard(r)
+    db = load(r)
+    path = docpath(r, a.file)[0] if a.file else r / DIR / "questions.md"
+    if not path.exists():
+        die("answers.nofile", path=path.name)
+    blocks = parse_blocks(path.read_text(encoding="utf-8"))
+    if not blocks:
+        die("answers.none", path=path.name)
+    names, why, out = state_names(), T("answers.why", file=path.name), []
+    cnt = {"applied": 0, "detail": 0, "skipped": 0, "errors": 0}
+    for cid, vals in blocks:
+        c = db["choices"].get(cid)
+        if not c or c["state"] >= 2:
+            out.append(T("answers.skipped", ix=idx(db, cid) if c else cid, reason=T("answers.r.closed" if c else "answers.r.unknown")))
+            cnt["skipped"] += 1
+            continue
+        ix = idx(db, cid)
+        try:
+            upd = {f: clean_field(f, vals[f]) for f in FIELDS if vals.get(f) and vals[f] != c.get(f)}
+            st, target = vals.get("state", ""), None
+            if st:
+                if norm(st) not in names:
+                    die("bad_state", s=st, names=" | ".join(SK))
+                target = names[norm(st)] if names[norm(st)] > c["state"] else None  # a stale (lower) state in the file is ignored
+            if target is None:
+                if {**c, **upd}.get("chosen") and {**c, **upd}.get("reason"):
+                    target = 2
+                elif upd and c["state"] == 0:
+                    target = 1
+            if target is not None and target != c["state"]:
+                out.append(do_set(r, db, cid, target, upd, why, dry=a.dry_run)[0]); cnt["applied"] += 1
+            elif upd:
+                labels = ", ".join(T("field." + f) for f in upd)
+                if not a.dry_run:
+                    log(r, type="detail", id=cid, fields=upd, why=why)
+                    c.update(upd); sync_doc(r, cid, c); save(r, db)
+                out.append(T("answers.would_detail" if a.dry_run else "answers.detail", ix=ix, labels=labels)); cnt["detail"] += 1
+        except Die as e:
+            out.append(T("answers.error", ix=ix, msg=e.plain)); cnt["errors"] += 1
+    print("\n".join(out + [T("answers.summary", a=cnt["applied"], d=cnt["detail"], s=cnt["skipped"], e=cnt["errors"])]))
+
+
+# ---------------------------------------------------------------- conflicts between decisions
+def alt_items(txt):
+    return [x for x in re.split(r"\s*(?:,|;|/|—|\s-\s|\band\b|\bet\b|\by\b|\bund\b)\s*", re.sub(r"\([^)]*\)", "", txt or "")) if x.strip()]
+
+
+def jac(a, b):
+    return len(a & b) / len(a | b) if a and b else 0.0
+
+
+def find_conflicts(db):
+    """Heuristic candidates: a decision rejects what another chose; two decisions answer the same question differently."""
+    dismissed = {frozenset(x) for x in db.get("dismissed", [])}
+    closed = {k: c for k, c in db["choices"].items() if c.get("chosen") and not c.get("refs")}
+    out, seen = [], set()
+    for ka, A in closed.items():
+        for it in alt_items(A.get("alternatives", "")):
+            ti = toks(it)
+            for kb, B in closed.items():
+                tb = toks(B["chosen"])
+                if kb != ka and ti and tb and (ti <= tb or tb <= ti or jac(ti, tb) >= 0.6) and (ka, kb) not in seen and frozenset((ka, kb)) not in dismissed:
+                    seen.add((ka, kb)); out.append(("rejected_vs_chosen", ka, kb, it))
+    ks = list(closed)
+    for i in range(len(ks)):
+        for j in range(i + 1, len(ks)):
+            A, B = closed[ks[i]], closed[ks[j]]
+            if frozenset((ks[i], ks[j])) not in dismissed and jac(toks(A["question"]), toks(B["question"])) >= 0.6 and jac(toks(A["chosen"]), toks(B["chosen"])) < 0.5:
+                out.append(("same_question", ks[i], ks[j], ""))
+    return out
+
+
+def conflict_pack(r, db):
+    """First pack of kind `conflict` in the active iteration, created if missing (overflow is handled by add)."""
+    act = active_iter(db)
+    if not act:
+        die("no_iter")
+    packs = sorted([(k, v) for k, v in db["packs"].items() if v["iter"] == act and v.get("kind") == "conflict"], key=lambda x: x[1]["n"])
+    if packs:
+        return packs[0][0]
+    before, p = derived(db), nid(db, "packs", "P")
+    db["packs"][p] = {"title": T("conf.pack"), "iter": act, "kind": "conflict", "n": bump(db["iterations"][act])}
+    log(r, type="create", id=p, title=T("conf.pack"), iter=act, why=T("conf.pack_why"))
+    commit(r, db, before, T("conf.pack_why"), T("cause.create", id=p))
+    return p
+
+
+def cmd_conflicts(a):
+    r = root()
+    if a.create or a.pack or a.dismiss or a.undismiss:
+        lock(r); guard(r)
+    db = load(r)
+    if a.undismiss:
+        ka, kb = resolve(db, a.undismiss[0]), resolve(db, a.undismiss[1])
+        pair = sorted([ka, kb])
+        if pair not in db.get("dismissed", []):
+            die("conf.not_dismissed", a=idx(db, ka), b=idx(db, kb))
+        db["dismissed"].remove(pair)
+        log(r, type="undismiss", id="-", pair=pair, why=need(a.why, "why"))
+        save(r, db)
+        print(T("conf.undismissed", a=idx(db, ka), b=idx(db, kb))); return
+    if a.dismiss:
+        ka, kb = resolve(db, a.dismiss[0]), resolve(db, a.dismiss[1])
+        if ka == kb or ka not in db["choices"] or kb not in db["choices"]:
+            die("merge.expect")
+        need(a.why, "why")
+        pair = sorted([ka, kb])
+        db.setdefault("dismissed", []).append(pair)
+        log(r, type="dismiss", id="-", pair=pair, why=a.why)
+        save(r, db)
+        print(T("conf.dismissed", a=idx(db, ka), b=idx(db, kb))); return
+    if a.pack:
+        p = conflict_pack(r, db)
+        print(T("conf.pack_is", ix=idx(db, p), title=db["packs"][p]["title"])); return
+    cands = find_conflicts(db)
+    if db.get("dismissed"):
+        print(T("conf.dismissed_list", list=", ".join(f"{idx(db, x)} / {idx(db, y)}" for x, y in db["dismissed"] if x in db["choices"] and y in db["choices"])) + "\n")
+    tracked = {frozenset(c["refs"]): k for k, c in db["choices"].items() if len(c.get("refs", [])) == 2}
+    esc = lambda x: str(x).replace("|", "\\|")
+    side = lambda k: f"{idx(db, k)} «{esc(db['choices'][k]['title'])}» → {esc(db['choices'][k]['chosen'])}"
+    if not cands:
+        print(T("conf.none"))
+    else:
+        print(T("conf.header", n=len(cands)) + "\n\n" + T("conf.table") + "\n|---|---|---|---|---|")
+        for typ, ka, kb, det in cands:
+            ia, ib = idx(db, ka), idx(db, kb)
+            kind, why = (T("conf.type.rejected"), T("conf.why.rejected", a=ia, b=ib, item=det)) if typ == "rejected_vs_chosen" else (T("conf.type.same"), T("conf.why.same", a=ia, b=ib))
+            tr = tracked.get(frozenset((ka, kb)))
+            st = T("conf.status.tracked", ix=idx(db, tr), state=SN(db["choices"][tr]["state"])) if tr else T("conf.status.new")
+            print(f"| {kind} | {side(ka)} | {side(kb)} | {why} | {st} |")
+    if a.digest:
+        rows = sorted([(k, c) for k, c in db["choices"].items() if c.get("chosen")], key=lambda x: ikey(db, x[0]))
+        print("\n" + T("conf.digest"))
+        for k, c in rows[: a.max]:
+            print(f"{idx(db, k)} | {c['question']} | {c['chosen']} | {c.get('alternatives') or '—'}")
+        if len(rows) > a.max:
+            print(T("conf.digest_more", n=len(rows) - a.max))
+    new = [x for x in cands if frozenset((x[1], x[2])) not in tracked]
+    if a.create and new:
+        p = conflict_pack(r, db)
+        for typ, ka, kb, det in new:
+            ia, ib = idx(db, ka), idx(db, kb)
+            q = T("conf.q.rejected", a=ia, b=ib, item=det) if typ == "rejected_vs_chosen" else T("conf.q.same", a=ia, b=ib, ca=db["choices"][ka]["chosen"], cb=db["choices"][kb]["chosen"])
+            c, target, note, created, rel = new_decision(r, db, T("conf.title", a=ia, b=ib), p, {"question": q}, why=T("conf.why_create", a=ia, b=ib), refs=[ka, kb])
+            tracked[frozenset((ka, kb))] = c
+            print(T("conf.created", ix=idx(db, c), a=ia, b=ib))
+            if note:
+                print(note)
+    elif new:
+        print("\n" + T("conf.hint"))
 
 
 # ---------------------------------------------------------------- adopting an existing project
@@ -1240,18 +1506,23 @@ def main():
     add("init", cmd_init, "create the registry here (--lang = user's language code)", ("--lang", F("ISO language code of the user, e.g. en, fr, es")), ("--doc-dir", F("default folder for decision documents")), ("--max-pack", {"type": int, "help": "max decisions per pack (default 6)"}))
     add("config", cmd_config, "show or set config (lang, max_pack, min_field, doc_dir)", ("key", {"nargs": "?"}), ("value", {"nargs": "?"}), why=True)
     add("iter-new", cmd_iter_new, "open a new iteration (previous must be Validated)", ("title", {}), why=True, force=True)
-    add("pack-new", cmd_pack_new, "create a pack in the active iteration", ("title", {}), ("--iter", {}), ("--kind", {"choices": ["link", "time"], "default": "link", "help": "link = same subject, time = same period"}), why=True, force=True)
+    add("pack-new", cmd_pack_new, "create a pack in the active iteration", ("title", {}), ("--iter", {}), ("--kind", {"choices": ["link", "time", "conflict"], "default": "link", "help": "link = same subject, time = same period, conflict = resolves contradictions"}), why=True, force=True)
     add("pack-rm", cmd_pack_rm, "delete an empty pack", ("pack", {}), why_required=True)
     add("add", cmd_add, "add a decision (document created or block appended)", ("title", {}), ("--pack", {"required": True}), ("--doc", F("path relative to project; default <doc_dir>/<slug>.md")),
         ("--question", {"required": True, "help": "the precise question this decision settles"}), ("--chosen", F("chosen option")), ("--alternatives", F("rejected alternatives (or 'none')")), ("--reason", F("why this option")),
-        ("--no-overflow", {"action": "store_true", "help": "refuse instead of using an overflow pack when the pack is full"}), why=True, force=True)
+        ("--no-overflow", {"action": "store_true", "help": "refuse instead of using an overflow pack when the pack is full"}), ("--refs", {"help": "related decisions (indexes, comma-separated), e.g. for a conflict"}), why=True, force=True)
+    add("questions", cmd_questions, "write every open question (todo/doing) to .decisions/questions.md to answer one by one", ("--all", {"action": "store_true", "help": "all iterations"}), ("--out", {"help": "output file (default .decisions/questions.md)"}), force=True)
+    add("answers", cmd_answers, "read the filled questions document and apply the answers (use --dry-run to preview)", ("--file", {}), ("--dry-run", {"action": "store_true"}))
+    add("conflicts", cmd_conflicts, "check for contradictions/conflicts between decisions; --create opens resolving decisions", ("--digest", {"action": "store_true", "help": "also list closed decisions compactly, for semantic review"}),
+        ("--create", {"action": "store_true", "help": "create a resolving decision per new candidate"}), ("--pack", {"action": "store_true", "help": "print (and create if needed) the conflicts pack"}),
+        ("--dismiss", {"nargs": 2, "metavar": ("A", "B"), "help": "mark a pair as a false positive (needs --why)"}), ("--undismiss", {"nargs": 2, "metavar": ("A", "B"), "help": "flag a dismissed pair again (needs --why)"}), ("--max", {"type": int, "default": 60}), why=True)
     add("detail", cmd_detail, "set/correct the 4 fields of a decision", ("id", {}), ("--question", {}), ("--chosen", {}), ("--alternatives", {}), ("--reason", {}), why_required=True)
     add("set", cmd_set, "change a decision's state (todo|doing|done|validated); Done/Validated require detail", ("id", {}), ("state", {}), ("--question", {}), ("--chosen", {}), ("--alternatives", {}), ("--reason", {}), why_required=True, force=True)
     add("move", cmd_move, "move a decision to another pack", ("id", {}), ("pack", {}), why_required=True, force=True)
     add("merge", cmd_merge, "merge two decisions of one pack (first kept, second absorbed)", ("keep", {}), ("absorbed", {}), ("--title", F("new title for the kept decision")), why_required=True)
     add("review", cmd_review, "find mergeable decisions (full or near-full packs)", ("pack", {"nargs": "?"}), ("--all", {"action": "store_true"}))
     add("status", cmd_status, "tree view of the active iteration", ("--all", {"action": "store_true"}))
-    add("next", cmd_next, "Markdown table of decisions + next steps (also writes .decisions/next.md)", ("--all", F("all iterations") | {"action": "store_true"}), ("--width", {"type": int, "default": 70, "help": "max cell width on screen (0 = full)"}))
+    add("next", cmd_next, "Markdown table of decisions + next steps (also writes .decisions/next.md)", ("--all", {"action": "store_true", "help": "all iterations, validated packs included"}), ("--width", {"type": int, "default": 70, "help": "max cell width on screen (0 = full)"}))
     add("show", cmd_show, "one element's record and full history", ("id", {}))
     add("log", cmd_log, "recent journal events", ("-n", {"type": int, "default": 10}), ("--hash", {"action": "store_true"}))
     add("verify", cmd_verify, "check journal integrity (exit 2 if altered/unsealed)", ("--head", {"action": "store_true", "help": "also print the full head hash"}))
@@ -1261,9 +1532,13 @@ def main():
         ("--ctxw", {"type": int, "default": 160, "help": "context length (assistant's preceding remark)"}), ("--context", {"action": "store_true", "help": "with --session: show the preceding remark"}))
     add("import", cmd_import, "import a retroactive plan (JSON); always --dry-run first", ("plan", {}), ("--dry-run", {"action": "store_true"}), ("--append", {"action": "store_true"}))
     a = ap.parse_args()
-    if a.cmd not in ("init", "import", "scan"):
-        root()
-    a.fn(a)
+    try:
+        if a.cmd not in ("init", "import", "scan"):
+            root()
+        a.fn(a)
+    except Die as e:
+        print(e, file=sys.stderr)
+        sys.exit(1)
 
 
 if __name__ == "__main__":

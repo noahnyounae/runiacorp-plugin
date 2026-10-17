@@ -28,6 +28,7 @@ add T --pack P --question Q [--doc f] [--chosen X --alternatives X --reason X] -
 detail ID [--question|--chosen|--alternatives|--reason X] --why W | set ID todo|doing|done|validated --why W [fields]
 move ID P --why W | merge KEEP ABSORB --why W [--title T] | review [P]
 next [--all] | status | show ID | log -n N | verify | seal --why W [--rebase] | export | scan | import PLAN [--dry-run]
+questions [--all] | answers [--dry-run] | conflicts [--digest|--create|--pack|--dismiss A B --why W]
 ```
 
 ## Precision (the script refuses otherwise)
@@ -37,9 +38,11 @@ Each decision has 4 fields: `question` (required at creation), `chosen` + `reaso
 - A Validated decision is edited only after setting it back to done/doing (with a reason), then `detail`. Validate only when the user asks.
 
 ## Workflows
-- **"What next / where are we"**: run `D next`, show the table verbatim (every row), at most one line before it, then a short recommendation citing indexes. If `⚠` appears, say so first and say what to ask the user. Do not re-read `next.md`.
+- **"What next / where are we"**: run `D next`, show the table verbatim (every row; it lists only packs not yet Validated), at most one line before it, then a short recommendation citing indexes. If `⚠` appears, say so first and say what to ask the user. Do not re-read `next.md`.
 - **No registry**: if the project has history (docs, git, chats), offer adoption and read `${CLAUDE_SKILL_DIR}/references/adopt.md`; otherwise `D init --lang <user's language>`, then check the detected `doc_dir` fits the project's conventions (`D config doc_dir …` if not).
 - **Full or near-full pack** (`add` warns or overflows): look at the merge candidates, judge semantic duplicates too, present a table (keep | absorb | why | risk), merge only after explicit consent. Tell the user when a decision went to an overflow pack; propose a thematic split (`pack-new` + `move`) if the "(2)" pack deserves a real name.
+- **Open questions** (todo/doing): `D questions` writes `.decisions/questions.md`; the user fills it (or answers one by one in chat, saved with `set`/`detail`); `D answers` applies it with the usual precision rules. Never fill answers yourself.
+- **Contradictions**: `D conflicts --digest`, then follow `${CLAUDE_SKILL_DIR}/references/conflicts.md` (judge, scan the digest for semantic conflicts, open resolving decisions).
 - **Integrity**: `⚠ journal` in `status`/`next` → run `D verify` and report faithfully. Never `seal --rebase` without explicit consent. Details: `${CLAUDE_SKILL_DIR}/references/integrity.md`.
 - Be economical: when the user gives the details with a state change, ONE `set ID done --chosen … --reason … --alternatives … --why …` (no prior `show`/`detail`). Answer in one line after write commands (index, change); do not paste script output.
 - Human-facing command reference: `${CLAUDE_SKILL_DIR}/decisions.md`; read it only when the user asks for help with commands.

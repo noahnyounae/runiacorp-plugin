@@ -2,6 +2,18 @@
 
 Format: [Keep a Changelog](https://keepachangelog.com/). Versioning: the `version` in `.claude-plugin/plugin.json` is the update signal for installed copies; bump it on every release.
 
+## [1.1.0] - 2026-10-18
+
+### Added
+- `questions` / `answers`: write every open question (todo/doing) to `.decisions/questions.md`, answer in the file one by one, then read it back; answers are validated with the usual precision rules and applied (or reported) per decision. `answers --dry-run` previews; `questions` refuses to overwrite unapplied answers.
+- `conflicts`: heuristic detection of contradictions between decisions (a decision rejects what another chose; the same question answered differently), a digest for Claude's semantic review, `--create` to open resolving decisions in a "Conflicts to resolve" pack (kind `conflict`, `refs` linking both decisions), `--dismiss` for false positives (journaled).
+- `add --refs` links related decisions.
+- 3 new slash commands: `decisions-questions`, `decisions-answers`, `decisions-conflicts`.
+
+### Changed
+- `next` shows only packs that are not Validated (a count of hidden ones is shown; `--all` shows everything, all iterations).
+- Internal: user errors are exceptions (`Die`), so batch commands report per item.
+
 ## [1.0.0] - 2026-10-17
 
 ### Added
