@@ -1,0 +1,12 @@
+{
+  "name": "runiacorp",
+  "description": "Runiacorp plugins for Claude Code",
+  "owner": { "name": "Runiacorp" },
+  "plugins": [
+    {
+      "name": "runiacorp-plugin",
+      "source": "./",
+      "description": "Runiacorp skills for Claude Code. Included: decisions (decision registry with hash-chained journal)."
+    }
+  ]
+}

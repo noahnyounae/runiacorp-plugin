@@ -1,0 +1,16 @@
+{
+  "name": "runiacorp-plugin",
+  "version": "1.0.0",
+  "description": "Runiacorp skills for Claude Code. Included: decisions (decision registry with hash-chained journal).",
+  "author": {
+    "name": "Runiacorp"
+  },
+  "keywords": [
+    "decisions",
+    "adr",
+    "project-management",
+    "audit"
+  ],
+  "homepage": "https://github.com/noahnyounae/runiacorp-plugin",
+  "repository": "https://github.com/noahnyounae/runiacorp-plugin"
+}
